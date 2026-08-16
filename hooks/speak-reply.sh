@@ -37,7 +37,7 @@ say_voiceargs() {
 # deck's playback speed control handles pacing.
 KOKORO_BIN="$HOME/.local/bin/mlx_audio.tts.generate"
 KOKORO_MODEL="mlx-community/Kokoro-82M-bf16"
-KOKORO_VOICE=$(cat "$HOME/.claude/speak-voice-kokoro" 2>/dev/null || echo "af_heart")
+KOKORO_VOICE=$(cat "$HOME/.claude/speak-voice-kokoro" 2>/dev/null || echo "bf_lily")
 ENGINE=$(cat "$HOME/.claude/speak-engine" 2>/dev/null || echo "")
 if [ -z "$ENGINE" ]; then
   if [ -x "$KOKORO_BIN" ]; then ENGINE=kokoro; else ENGINE=say; fi
