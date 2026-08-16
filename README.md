@@ -1,0 +1,103 @@
+# SpeakySpeak
+
+**A macOS menu-bar deck that reads Claude Code's replies aloud.** When Claude finishes a turn, a Stop hook renders the reply with a local neural voice and queues it. Replies play **one at a time**, so several parallel Claude sessions never talk over each other.
+
+Everything runs on your machine. No cloud TTS, no API keys, no subscription. Free and MIT-licensed.
+
+It is a playback layer, not a voice mode: it never touches your input, so you keep typing normally and just hear the answers.
+
+## What you need
+
+- **macOS 14 or newer** and **Xcode Command Line Tools** (`xcode-select --install`). The app compiles from source in a few seconds and is ad-hoc signed, so there is no Gatekeeper or notarization dance. Note that *building* wants a current SDK, because the mini player uses macOS 26 Liquid Glass APIs behind availability checks; the app it produces runs on 14+.
+- **Claude Code**, installed and signed in.
+- **Apple Silicon** for the neural voice (Kokoro via MLX). On Intel it falls back to the built-in macOS `say` voice and everything else works.
+- `jq` (already in `/usr/bin` on recent macOS). `ffmpeg`, `espeak-ng` and `uv` are only needed for the neural voice.
+
+## Install
+
+```sh
+git clone https://github.com/radam5000/speakyspeak.git
+cd speakyspeak && ./install.sh
+```
+
+Then add two hook entries to `~/.claude/settings.json` (`install.sh` prints the exact snippet) and start a new Claude Code session. **[SETUP.md](SETUP.md) is the full step-by-step**, including the neural-voice setup and troubleshooting.
+
+The rest of this README is the architecture and controls reference.
+
+---
+
+App source and hook sources both live in this repo. Run `./install.sh` to build and install everything. The moving parts at runtime:
+
+- `~/Applications/SpeakySpeak.app` — the built app (single-file swiftc, ad-hoc signed, LSUIElement). `./build.sh` rebuilds just the app (and copies `Icon/AppIcon.icns` + `Icon/SyGlyph.png` in). The brand mark is the hand-made `Icon/SyLogo.png` (white Optima "Sy" on a black tile); `Icon/render-icon.swift` lifts the white "Sy" into a tintable transparent shape (`SyGlyph.png`, used for the menu bar) and composes it onto a squircle for the 1024 master, and `Icon/make-icon.sh` slices that into `AppIcon.icns`. Re-run `Icon/make-icon.sh` after editing `SyLogo.png`.
+- `~/.claude/hooks/speak-reply.sh` (Stop hook) — wakes the app, renders each reply with Kokoro (falls back to `say`), and drops `<epoch>-<sid>.m4a` + `.json` into the queue. `~/.claude/hooks/session-end.sh` (SessionEnd hook) drops `.end` so the deck clears that session's *played* items (unheard replies stay). Live copies in `~/.claude/hooks/`, sources in `hooks/` here — edit here, `./install.sh` copies. Wired in `~/.claude/settings.json` (snippet printed by install.sh).
+- `/tmp/claude-speech/queue/` — runtime queue. `.done` markers persist played state across app restarts. Logs: `/tmp/claude-speech/deck.log` (app), `hook.log` (hook).
+
+## Controls
+
+- **Menu-bar icon** — left-click drops the deck down as a popover (dismisses when you click away); right-click (or ctrl-click) opens a Settings… / Mute / Quit menu. By default the icon is the **"Sy" brand mark** (the exact Optima letterforms from the app icon, drawn as a template so it tints for light/dark bars); Settings ▸ Appearance can swap it for the speaker status glyph. Either way it carries a queue-count badge, **pulses** with speech loudness while playing, **dims** when muted (~55%) or speech is off (~35%), and the exact state is in the hover tooltip. A new reply never forces a window forward — the badge and pulse signal it instead.
+- **Speaker (top right area)** — the single on/off. Muted: replies keep rendering and queueing ("chats build up"), nothing is read aloud. Persists across restarts (so do playback rate and volume).
+- **Volume slider** (between speaker and speed) — playback volume, 0–100%. Renders are loudness-normalized to −16 LUFS in the hook (Kokoro's raw output is ~12dB quieter than `say`), so 100% ≈ normal speech level.
+- **Skip = stop this reply.** The skip button (now-playing transport and the mini HUD) stops whatever's speaking and plays the next queued reply, or goes quiet if nothing's queued — unlike Mute/Pause, it doesn't shut the whole pipeline down, it just drops the one track you don't want to hear. Works even with an empty queue.
+- **Mini HUD** — whenever a reply starts speaking, a tiny floating panel drops under the menu-bar icon with the title and a full transport: **back-track / back-10 / play-pause / forward-10 / skip** (the two track buttons pinned to the far edges), so one click controls what you're hearing without opening the full deck. "Back-track" (far left) restarts the current reply, then steps to the previously-played one if you're already near the start (music-player style); "skip" (far right) stops the current one and moves on. A **glowing progress bar along the bottom** shows how far into the reply you are. It bridges the gap between queued replies and fades out a moment after things go quiet. **Drag it anywhere** — grab the background and move it; the spot sticks across launches instead of snapping back under the icon. When a reply starts — or you skip forward / step back / restart — it **flashes bright glowing white** for a moment so it's easy to spot wherever you've parked it. Its surface is **Liquid Glass** on macOS 26+ (Settings ▸ Appearance can switch it to the classic frosted card if the glass contrast is hard to read over some backgrounds). An **X dismisses it for the current reply only** — it pops back up on its own when the next reply starts. Non-activating, so it never steals focus or interrupts typing. Left-clicking the icon still opens the full deck.
+- **Global hotkey — ⌃⌥⌘Space** ("quiet now") — system-wide; stops the current reply (skips to the next if queued, else silent). Registered via Carbon, so no Accessibility/Input-Monitoring permission prompt. No-op when nothing's playing (never cold-starts audio).
+- **Rows** — the row itself is inert; the left icon is pure status (orange dot = queued, gray check = played). Actions are on the right: hover for play-now / remove, chevrons reorder the queue.
+- **Bottom-right footer** — sweep icon clears all played replies; trash icon deletes everything, played and queued. Every icon has a hover tooltip.
+- **Settings** — gear in the footer, or right-click the icon → Settings…. A native grouped window for the knobs that used to require editing dotfiles by hand (engine + voice), plus playback/appearance. See below.
+- **Quit** — right-click the menu-bar icon → Quit (also right-click anywhere on the panel itself).
+- `~/.claude/speak-off` remains a shell-side hard kill (hook won't render at all); the deck watches it and shows "Speech is off" when present.
+- **AirPods / media keys** — the deck publishes to macOS Now Playing while a reply is speaking (or paused mid-reply, or more are queued): one AirPods stem click pauses/resumes, double-click skips to the next reply, triple-click restarts/steps back; Control Center gets a working scrubber. The claim is released when the deck goes idle, so headphone clicks return to Music/Spotify.
+- **Two Macs, one pair of AirPods** — put the *other* Mac's Tailscale IP in `~/.claude/speak-peer` on each machine and the decks take turns: before *auto*-playing, a deck asks the peer (TCP 48765, "playing"/"idle") and holds until it's quiet, so macOS's AirPods auto-switching hands off at the gap instead of tug-of-warring mid-sentence. Manual plays never wait. Checks fail open — no file, peer off, or unreachable all mean "just play."
+
+## Settings
+
+The settings window is the GUI front for the same `~/.claude` dotfiles the Stop hook reads — it writes them, so there's one source of truth and shell edits still work.
+
+- **Speak Claude's replies** — master switch; off creates `~/.claude/speak-off` (stops *rendering* entirely). Distinct from Mute, which keeps rendering/queueing but doesn't play aloud.
+- **Voice** — Kokoro voices (curated English set; → `speak-voice-kokoro`) when Kokoro is installed, else the installed `say` voices (enumerated from `say -v '?'`; → `speak-voice`, "Automatic" = best probed) with a words-per-minute **Rate** (→ `speak-rate`). No Engine row in the UI — `~/.claude/speak-engine` still overrides from the shell. The ▶ beside the picker previews the selected voice ("Hi, I'm …"); switching voices mid-preview hops to the new one. Kokoro samples render via the warm daemon (cold CLI fallback — which also fetches a voice missing from the offline HF cache) and cache in `/tmp/claude-speech/preview/`.
+- **Voice change re-speaks the queue** — closing Settings with a different Kokoro voice re-renders all *queued* (unplayed) items in it, warm-daemon-only (daemon down = old audio kept), atomic swap per file. Needs the manifest's `text` field, so items queued before 2026-07-20 keep their voice.
+- **Playback** — speed, volume, mute (app prefs, same as the deck controls).
+- **Appearance** — menu-bar icon style (Sy mark / speaker); the **reading panel** style (**Liquid Glass** — translucent Apple glass with adaptive glass transport keys, macOS 26+ — or **Frosted (classic)**, the solid, always-legible material card; Liquid Glass is the default on macOS 26 and greys out below it); and **when it shows** — **Only while speaking** (auto-appears with a reply, fades after — the default) or **Always visible** (a persistent little controller that stays on screen; the X dismiss is hidden in this mode). All app prefs.
+
+## Ordering rules
+
+- **Newest plays next.** A fresh arrival slots in at the top of Up Next, right under whatever is speaking; stale backlog sinks to the bottom.
+- A reply paused mid-way is never preempted by autoplay; new arrivals wait.
+- On launch, a restored backlog stays silent — only a reply created in the last 2 minutes autoplays (the hook may have cold-started the app for it).
+
+## Voice engine
+
+Default engine is **Kokoro-82M**, a local neural TTS running on MLX — free, on-device, ~8× realtime on the M3 Pro.
+
+**Warm daemon (the speed path).** Spawning the Kokoro CLI cold on every reply paid a ~3s model-load tax each time. `hooks/tts-daemon.py` (a LaunchAgent, `com.adamraabe.speakyspeak-tts`) loads Kokoro **once** at login, warms the MLX graph, and then renders each reply in ~0.3–0.9s. The Stop hook talks to it through a filesystem request queue (`/tmp/claude-speech/render/*.req` → `<out>.wav` + `*.done`, with a `daemon.alive` heartbeat), and **only** when the heartbeat is fresh — on a stale/absent heartbeat, timeout, or error it falls straight through to the cold CLI (then `say`), so the daemon is a pure speedup with no new failure mode. `install.sh` writes + bootstraps the LaunchAgent (skipped if mlx-audio isn't installed). Logs: `/tmp/claude-speech/tts-daemon.log`. Runs offline (`HF_HUB_OFFLINE=1`).
+ Installed as a uv tool (pinned: `uv tool install --python 3.12 "mlx-audio[tts]==0.4.1" --with "misaki[en]" --with "en_core_web_sm @ <spacy-models release wheel URL>"`; 0.4.4 has a length-dependent broadcast_shapes regression, [issue #784](https://github.com/Blaizzy/mlx-audio/issues/784) — re-test newer versions before unpinning). Requires `brew install espeak-ng`. If the binary is missing or a render fails, the hook falls back to `say` automatically.
+
+Knobs: `~/.claude/speak-engine` (`kokoro` | `say`; absent = kokoro when installed), `~/.claude/speak-voice-kokoro` (default `af_heart`; ~54 voices in the model card). `say`-only knobs: `~/.claude/speak-rate` (wpm), `~/.claude/speak-voice` (absent = best installed voice is probed — Premium/Enhanced preferred, system default as last resort, so a fresh Mac never fails silent). The deck only cares about the .m4a/.json contract, so any engine that produces those works. The in-app Settings window writes these same files (and re-reads them on open), so the GUI and shell edits stay in sync.
+
+## What gets spoken
+
+**The whole turn's prose, not just its last paragraph.** A reply is usually split across several assistant text entries with tool calls between them — an answer, an artifact publish, a closing note. The hook once spoke only the final entry, so everything before the last tool call went unread. Two separate jobs do this now, and it matters that they stay separate:
+
+- `extract()` is the **gate** — it decides *when* to speak, and only fires once the transcript's last assistant entry is a settled text entry. This is what keeps mid-turn preambles and the Stop-event flush race from being mistaken for the reply. Don't repurpose it.
+- `gather_turn()` decides *what* — every assistant text entry back to the last real user message. Tool results, meta injections, and the `system`/`frame-link`/`mode` bookkeeping entries are not turn boundaries; subagent (sidechain) and thinking blocks are excluded.
+
+The gathered text is used only when it still **ends with** the entry the gate settled on; otherwise the hook falls back to that entry alone, so the widening can never speak something the gate didn't approve. Side effect worth knowing: in a long agentic turn you now also hear the short progress lines ("Now the wiki-link fix itself."), because those are on screen too.
+
+## Listenable text
+
+Before rendering, `speak-reply.sh` rewrites the reply into something tuned for the ear, not the eye (the `clean=` block — one Unicode-aware `perl` pass between dropping code fences and stripping markdown symbols):
+
+- emoji / icons / symbol glyphs → removed; arrows (→) → "to"
+- slash-commands (`/code-review`) → spoken words ("code review")
+- markdown links `[text](url)` → just the text; bare URLs → "link"
+- long/absolute paths (`~/Development/speakyspeak/main.swift`) → basename ("main.swift")
+- leftover markdown (`*_\`#>|`), list bullets, and double-spaces → cleaned up
+
+It's a *light* pass — inline identifiers and prose are left intact; it only strips what reads as gibberish aloud. The same cleaned text feeds the deck's row preview. Gotcha for future edits: running a nested `s///` inside the perl replacement clobbers `$1` (the captured leading space) — the slash-command rule uses `tr///r` for exactly this reason.
+
+## Status (2026-06-22)
+
+Added "quiet without killing the pipeline": skip-as-stop on the transport, an auto-showing mini HUD under the menu-bar icon while speaking (with an X to dismiss it for the current reply), and a system-wide ⌃⌥⌘Space hotkey to silence the current reply (Carbon hotkey, no permission prompt). Also a listenable-text pass in the hook (strips emoji/markdown, speaks slash-commands and paths as words). Earlier (2026-06-15): moved from an always-on-top floating panel to a menu-bar deck (popover on click), added the "Sy" brand mark (menu-bar glyph + app icon), and a settings window fronting the engine/voice dotfiles. Earlier: sequencing + enable/disable hardening (pause-steal, stale-player race, session-end deletions, mute persistence, stop-time ordering, power toggle). Dev history before this repo lives in `git -C ~/.claude log -- tools/speakyspeak tools/claude-speak tools/speech-deck`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

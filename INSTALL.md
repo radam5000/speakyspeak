@@ -1,0 +1,238 @@
+# SpeakySpeak — install
+
+This file is written for an agent (Claude Code) to execute top to bottom, unattended. Each step is one command plus one sentence describing the expected result. If a step's result doesn't match, stop and report which step failed before continuing.
+
+SpeakySpeak is a macOS menu-bar app. A Claude Code Stop hook renders each reply to audio with a local neural voice (Kokoro) and queues it; the app plays queued replies one at a time.
+
+Repo: `https://github.com/radam5000/speakyspeak` — clone this URL exactly.
+
+---
+
+## 0. Requirements check
+
+Run each command. All must pass before continuing.
+
+```sh
+sw_vers -productVersion
+```
+Expected: a version number `14.0` or higher.
+
+```sh
+xcode-select -p
+```
+Expected: a path (e.g. `/Library/Developer/CommandLineTools`), not an error. If it errors, run `xcode-select --install`, wait for the GUI installer to finish, then re-run this check.
+
+```sh
+which brew
+```
+Expected: a path (e.g. `/opt/homebrew/bin/brew`). If missing, install Homebrew first (https://brew.sh) — this doc does not cover that.
+
+```sh
+which claude
+```
+Expected: a path. Claude Code must already be installed and signed in.
+
+```sh
+uname -m
+```
+Expected: `arm64` (Apple Silicon, gets the neural voice) or `x86_64` (Intel, falls back to macOS `say` — everything else still works; skip step 3).
+
+---
+
+## 1. Clone the repo
+
+```sh
+git clone https://github.com/radam5000/speakyspeak.git ~/speakyspeak
+cd ~/speakyspeak
+```
+Expected: the folder `~/speakyspeak` now exists and contains `install.sh`, `README.md`, `main.swift`.
+
+**Do not delete this folder after install.** The app checks for updates daily and shows "Update to X…" in its right-click menu; updating re-pulls from this exact clone. Deleting it breaks future updates, not just the source copy.
+
+---
+
+## 2. Install command-line dependencies
+
+```sh
+brew install jq ffmpeg espeak-ng uv
+```
+Expected: brew reports each formula installed or already installed, no errors.
+
+What each is for:
+- `jq` — required. The hook parses its JSON input with it; without it nothing renders.
+- `ffmpeg` — required for correct volume. It loudness-normalizes audio to −16 LUFS during encoding. Kokoro's raw output is ~12dB quieter than `say`; without ffmpeg the hook silently falls back to `afconvert`, which has no gain stage, and every reply plays back too quiet.
+- `espeak-ng`, `uv` — needed only for the Kokoro neural voice (Apple Silicon). Skip is harmless on Intel; the hook falls back to `say` automatically.
+
+Verify ffmpeg specifically, since a quiet install is the least visible failure:
+```sh
+command -v ffmpeg
+```
+Expected: a path. If empty, redo the brew install for ffmpeg before moving on.
+
+---
+
+## 3. Install the Kokoro neural voice (Apple Silicon only — skip on Intel)
+
+Install mlx-audio as an isolated uv tool, **pinned to exactly 0.4.1**. Version 0.4.4 has a length-dependent audio-render regression (upstream issue [#784](https://github.com/Blaizzy/mlx-audio/issues/784)) — do not install latest or omit the version pin.
+
+```sh
+uv tool install --python 3.12 "mlx-audio[tts]==0.4.1" \
+  --with "misaki[en]" \
+  --with "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+```
+Expected: `Installed 1 executable: mlx_audio.tts.generate` (or similar uv success output), no errors.
+
+```sh
+ls ~/.local/bin/mlx_audio.tts.generate
+```
+Expected: the file exists.
+
+### Test-render now (downloads the model)
+
+The model (`mlx-community/Kokoro-82M-bf16`, ~350MB) downloads on first render. Do that here, not on the user's first Claude Code reply — and not after step 4, because the warm-TTS LaunchAgent that `install.sh` sets up runs offline and will crash-loop if the model isn't cached yet.
+
+```sh
+~/.local/bin/mlx_audio.tts.generate \
+  --model mlx-community/Kokoro-82M-bf16 --voice af_heart \
+  --text "Hello, this is SpeakySpeak." --file_prefix /tmp/speakytest --join_audio
+afplay /tmp/speakytest.wav && rm -f /tmp/speakytest*.wav
+```
+Expected: you hear a synthesized voice say the test sentence. If this step fails for any reason, it is not fatal — the pipeline falls back to macOS `say` automatically. Continue to step 4 and retry this step (then re-run `./install.sh`) later.
+
+---
+
+## 4. Build and install the app + hooks
+
+From `~/speakyspeak`:
+
+```sh
+./install.sh
+```
+
+This is idempotent (safe to re-run). It runs `./build.sh` (compiles `main.swift`, ad-hoc signs, installs to `~/Applications/SpeakySpeak.app`), then:
+- copies `hooks/speak-reply.sh`, `hooks/session-end.sh`, `hooks/tts-daemon.py` to `~/.claude/hooks/` and makes them executable
+- if `~/.local/bin/mlx_audio.tts.generate` exists (step 3 succeeded), writes and bootstraps the LaunchAgent `com.adamraabe.speakyspeak-tts`, which keeps the Kokoro model warm in memory so replies render in ~0.3–0.9s instead of ~3s cold
+- **does not touch `~/.claude/settings.json`** — it only prints the hook-registration snippet to the terminal. Step 5 below does the actual registration.
+
+Expected output includes `Installed hooks to ~/.claude/hooks/` and either `Warm TTS daemon running (com.adamraabe.speakyspeak-tts)...` or `mlx-audio not installed — skipping warm TTS daemon (say fallback stays).` (expected on Intel, or if step 3 was skipped/failed).
+
+Verify:
+```sh
+ls ~/Applications/SpeakySpeak.app/Contents/MacOS/SpeakySpeak
+ls ~/.claude/hooks/speak-reply.sh ~/.claude/hooks/session-end.sh ~/.claude/hooks/tts-daemon.py
+```
+Expected: all four paths exist.
+
+---
+
+## 5. Register the hooks in Claude Code
+
+`install.sh` does **not** edit `~/.claude/settings.json` for you. Open that file and add the following inside the top-level `"hooks"` object. **Merge, don't replace** — if `"hooks"` or existing `Stop`/`SessionEnd` entries already exist, add these hook objects alongside what's there, don't overwrite the file.
+
+```json
+"hooks": {
+  "Stop": [{ "matcher": "*", "hooks": [
+    { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
+      "timeout": 600, "async": true }
+  ]}],
+  "SessionEnd": [{ "matcher": "*", "hooks": [
+    { "type": "command", "command": "bash ~/.claude/hooks/session-end.sh" }
+  ]}]
+}
+```
+
+If `~/.claude/settings.json` doesn't exist yet, create it with just:
+```json
+{
+  "hooks": {
+    "Stop": [{ "matcher": "*", "hooks": [
+      { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
+        "timeout": 600, "async": true }
+    ]}],
+    "SessionEnd": [{ "matcher": "*", "hooks": [
+      { "type": "command", "command": "bash ~/.claude/hooks/session-end.sh" }
+    ]}]
+  }
+}
+```
+
+Verify the file is valid JSON after editing:
+```sh
+jq . ~/.claude/settings.json > /dev/null && echo "valid JSON"
+```
+Expected: `valid JSON`, no error.
+
+---
+
+## 6. Launch the app
+
+```sh
+open ~/Applications/SpeakySpeak.app
+```
+Expected: a "Sy" icon appears in the menu bar (left-click for the queue popover, right-click for Settings / Mute / Quit).
+
+```sh
+pgrep -f SpeakySpeak.app/Contents/MacOS/SpeakySpeak
+```
+Expected: a process ID (a number). Empty output means the app isn't running — re-run `open` above.
+
+---
+
+## 7. Test end to end
+
+Hooks load at session start, so start a **new** Claude Code session (not the one running this install) and send it any message.
+
+Within a few seconds of that new session's reply finishing, expected: you hear the reply spoken aloud, the menu-bar icon shows a queue badge / pulses, and a small floating mini player appears under the icon.
+
+If you want to verify without a second session, check the logs after any Claude Code turn completes in a session that has the hook wired:
+```sh
+cat /tmp/claude-speech/hook.log
+```
+Expected: log lines showing the hook ran (transcript path found, engine used, render success). Empty or missing file means the hook never fired — recheck step 5.
+
+---
+
+## Logs
+
+- `/tmp/claude-speech/hook.log` — the Stop hook (per-reply render)
+- `/tmp/claude-speech/deck.log` — the app
+- `/tmp/claude-speech/tts-daemon.log` — the warm Kokoro renderer (also `~/Library/Logs/speakyspeak-tts.out.log` / `.err.log` from the LaunchAgent)
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Audio plays but is much quieter than normal speech | `ffmpeg` not installed; hook fell back to `afconvert` with no gain stage | `brew install ffmpeg`, then just wait for the next reply (no reinstall needed — the hook checks for ffmpeg on every run) |
+| ~3 second delay before every reply starts speaking | Warm TTS daemon isn't running, or the Kokoro model wasn't downloaded before the daemon started (crash-looping) | Do the test render in step 3, then `launchctl kickstart -k gui/$(id -u)/com.adamraabe.speakyspeak-tts`; check `~/Library/Logs/speakyspeak-tts.err.log` for crash detail |
+| No speech at all, and `/tmp/claude-speech/hook.log` has no new lines after a turn | Hook not registered in `~/.claude/settings.json`, or the session predates the registration | Recheck step 5's JSON is valid and merged correctly, then start a **new** Claude Code session (hooks load at session start, not mid-session) |
+| No speech at all, but `hook.log` shows the hook ran | `~/.claude/speak-off` exists (hard kill), or the deck is muted | `rm -f ~/.claude/speak-off`; right-click the menu-bar icon and check Mute is off |
+| Voice sounds robotic / like the built-in macOS voice | Kokoro isn't installed, or the daemon/CLI failed and it fell back to `say` | Redo step 3 (test render must succeed), then `./install.sh` again to set up the warm daemon; or in System Settings → Accessibility → Spoken Content → System Voice, download a better voice (e.g. Ava Premium) — the hook finds it automatically |
+| No menu-bar icon | App isn't running | `open ~/Applications/SpeakySpeak.app` |
+
+---
+
+## Knobs (plain files, read by the hook and app)
+
+All under `~/.claude/`, created by touching/writing the file — no file means default behavior.
+
+- `speak-off` — hard kill; touch this file to stop rendering entirely (`rm -f` to re-enable)
+- `speak-rate` — words per minute, `say` engine only
+- `speak-voice` — `say` voice name (e.g. `Ava (Premium)`); absent = best installed voice is auto-probed
+- `speak-voice-kokoro` — Kokoro voice id (default `af_heart`; ~54 voices in the model card)
+- `speak-engine` — force `say` or `kokoro`; absent = kokoro when installed, else say
+
+### Optional: two Macs sharing one pair of AirPods
+
+If this Mac and another Mac both run SpeakySpeak and share AirPods, they can take turns instead of fighting over playback. On each Mac, write the *other* Mac's Tailscale IP to:
+
+```sh
+echo "<other-mac-tailscale-ip>" > ~/.claude/speak-peer
+```
+
+Before auto-playing, each deck asks the peer (TCP port 48765) and waits if the peer is currently speaking, so macOS's AirPods auto-switching hands off cleanly instead of overlapping. Manual plays (clicking a queued item) never wait. If the file is absent, the peer is off, or it's unreachable, the deck just plays — this fails open and is skippable if only one Mac is in use.
+
+---
+
+Full architecture, controls reference, and settings-window documentation: [README.md](README.md).
