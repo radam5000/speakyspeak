@@ -1361,9 +1361,13 @@ struct ShimmerGlow: View {
 // `git pull --ff-only && ./install.sh` in the clone install.sh recorded via
 // the srcPath default. No clone recorded (or gone) → open the repo page
 // instead of failing silently.
-final class Updater {
+final class Updater: ObservableObject {
     static let shared = Updater()
-    private(set) var availableVersion: String?
+    @Published private(set) var availableVersion: String?
+    // Set when this launch is the first run of a new version (the previous
+    // run's version is remembered in UserDefaults). Drives the menu's
+    // "just updated ✓" line — the update itself is otherwise invisible.
+    private(set) var justUpdatedFrom: String?
 
     static let repoPage = "https://github.com/radam5000/speakyspeak"
     private let versionURL = URL(string: "https://raw.githubusercontent.com/radam5000/speakyspeak/main/VERSION")!
@@ -1375,6 +1379,11 @@ final class Updater {
     }
 
     func start() {
+        let d = UserDefaults.standard
+        if let prev = d.string(forKey: "lastRunVersion"), prev != localVersion {
+            justUpdatedFrom = prev
+        }
+        d.set(localVersion, forKey: "lastRunVersion")
         check()
         Timer.scheduledTimer(withTimeInterval: 24 * 3600, repeats: true) { [weak self] _ in self?.check() }
     }
@@ -2744,6 +2753,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // currentID: a skip while already playing changes the reply without
         // toggling isPlaying — Now Playing needs the new title/duration
         .merge(with: deck.$currentID.removeDuplicates().map { _ in () })
+        // …and the ↑ update hint the moment the daily check finds one
+        .merge(with: Updater.shared.$availableVersion.removeDuplicates().map { _ in () })
         .receive(on: DispatchQueue.main)
         .sink { [weak self] in
             self?.refreshStatus()
@@ -2833,6 +2844,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func showMenu(_ button: NSStatusBarButton) {
         let menu = NSMenu()
+        // Version is otherwise invisible (no About box, no dock): state it
+        // here, and say plainly when this run is fresh off an update.
+        let vTitle: String
+        if let from = Updater.shared.justUpdatedFrom {
+            vTitle = "SpeakySpeak \(Updater.shared.localVersion) — updated from \(from) ✓"
+        } else {
+            vTitle = "SpeakySpeak \(Updater.shared.localVersion)"
+        }
+        let vItem = NSMenuItem(title: vTitle, action: nil, keyEquivalent: "")
+        vItem.isEnabled = false
+        menu.addItem(vItem)
+        menu.addItem(.separator())
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
@@ -2883,8 +2906,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         let queued = deck.items.filter { $0.state == .queued }.count
-        button.title = queued > 0 ? " \(queued)" : ""
-        button.toolTip = stateTooltip(deck, queued: queued)
+        var title = queued > 0 ? " \(queued)" : ""
+        var tip = stateTooltip(deck, queued: queued)
+        // A waiting update gets a persistent ↑ next to the icon, so it's
+        // visible without opening the menu; the tooltip says what to do.
+        if let v = Updater.shared.availableVersion {
+            title += " ↑"
+            tip += "\nUpdate to \(v) available — right-click to install."
+        }
+        button.title = title
+        button.toolTip = tip
 
         if deck.isPlaying {
             startPulse()
