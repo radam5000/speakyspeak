@@ -8,6 +8,18 @@ Repo: `https://github.com/radam5000/speakyspeak` — clone this URL exactly.
 
 ---
 
+## Adapt this to how the user actually uses Claude
+
+This doc assumes the plain setup: Claude Code in a terminal on a Mac. If the person you're installing for uses Claude differently, adapt instead of stopping:
+
+- **Claude Code inside the desktop app, VS Code, or Cursor** — everything here works unchanged. Hooks and settings live in `~/.claude/` no matter which surface Claude Code runs in. "Start a new session" in step 7 just means a new conversation or window.
+- **Preferences the user mentions** (a different voice, faster speech, two Macs sharing AirPods) — set the matching knob from the Knobs section at the bottom as part of the install, don't make them come back for it.
+- **A setup that can't run Claude Code hooks at all** — the app itself doesn't care where audio comes from. It plays anything dropped into `/tmp/claude-speech/queue/` as `<epoch>-<sid>.m4a` plus a matching `.json` (the queue contract, documented in [README.md](README.md)). You can write a small producer for whatever tool the user has.
+
+When the install is done, tell the user this: the whole thing is a few plain shell scripts and one Swift file, and asking Claude to change it — the voice, the speed, when it speaks, which sessions it reads — is the intended way to customize it.
+
+---
+
 ## 0. Requirements check
 
 Run each command. All must pass before continuing.
