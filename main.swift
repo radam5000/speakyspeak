@@ -1404,17 +1404,37 @@ final class Updater: ObservableObject {
         Timer.scheduledTimer(withTimeInterval: 24 * 3600, repeats: true) { [weak self] _ in self?.check() }
     }
 
-    private func check() {
+    // Manual checks (the Settings button) also report "up to date" / failure;
+    // the silent daily check leaves checkResult alone unless it finds one.
+    @Published private(set) var checking = false
+    @Published private(set) var checkResult: String?
+
+    func checkNow() {
+        guard !checking else { return }
+        checking = true
+        checkResult = nil
+        check(manual: true)
+    }
+
+    private func check(manual: Bool = false) {
         var req = URLRequest(url: versionURL)
         req.cachePolicy = .reloadIgnoringLocalCacheData
         URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
-            guard let self, let data,
-                  let remote = String(data: data, encoding: .utf8)?
-                      .trimmingCharacters(in: .whitespacesAndNewlines),
-                  !remote.isEmpty, remote.count < 32 else { return }
+            guard let self else { return }
+            let remote = data.flatMap { String(data: $0, encoding: .utf8) }?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             DispatchQueue.main.async {
+                self.checking = false
+                guard let remote, !remote.isEmpty, remote.count < 32 else {
+                    if manual { self.checkResult = "Couldn't reach the update server." }
+                    return
+                }
                 self.availableVersion = Self.newer(remote, than: self.localVersion) ? remote : nil
-                if self.availableVersion != nil { dlog("update available: \(remote) (local \(self.localVersion))") }
+                if self.availableVersion != nil {
+                    dlog("update available: \(remote) (local \(self.localVersion))")
+                } else if manual {
+                    self.checkResult = "You're on the latest version."
+                }
             }
         }.resume()
     }
@@ -2519,6 +2539,7 @@ struct SettingsView: View {
     @ObservedObject var settings = SettingsStore.shared
     @ObservedObject var deck = Deck.shared
     @ObservedObject var previewer = VoicePreviewer.shared
+    @ObservedObject var updater = Updater.shared
 
     var body: some View {
         Form {
@@ -2587,6 +2608,24 @@ struct SettingsView: View {
                 }
                 Text("“Always visible” keeps the mini panel on screen as a persistent controller; otherwise it appears only while a reply is being spoken.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Updates") {
+                LabeledContent("Version", value: updater.localVersion)
+                if let v = updater.availableVersion {
+                    Button("Update to \(v) now") { Updater.shared.performUpdate() }
+                    Text("Pulls the latest, rebuilds, and relaunches in a few seconds.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    LabeledContent {
+                        Button(updater.checking ? "Checking…" : "Check for Updates") {
+                            Updater.shared.checkNow()
+                        }
+                        .disabled(updater.checking)
+                    } label: {
+                        Text(updater.checkResult ?? "Checked automatically once a day.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .formStyle(.grouped)
