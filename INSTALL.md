@@ -10,9 +10,10 @@ Repo: `https://github.com/radam5000/speakyspeak` — clone this URL exactly.
 
 ## Adapt this to how the user actually uses Claude
 
-This doc assumes the plain setup: Claude Code in a terminal on a Mac. If the person you're installing for uses Claude differently, adapt instead of stopping:
+This doc is written as if Claude Code were running in a terminal, because that's the shortest way to describe shell commands. If the person you're installing for uses Claude Code differently, adapt instead of stopping:
 
-- **Claude Code inside the desktop app, VS Code, or Cursor** — everything here works unchanged. Hooks and settings live in `~/.claude/` no matter which surface Claude Code runs in. "Start a new session" in step 7 just means a new conversation or window.
+- **Claude Code inside the desktop app, VS Code, or Cursor** — everything here works unchanged, including the shell commands (you run them in your own tool, not in a terminal the user has to open). Hooks and settings live in `~/.claude/` no matter which surface Claude Code runs in, so the hook fires the same way. "Start a new session" in step 7 means a new conversation, a new chat tab, or a new window — whatever counts as starting over in their setup.
+- **Claude Code somewhere other than a Mac** (a Linux box, a remote machine, a web surface) — the app is macOS-only and the hook has to run on the same Mac as the app. Stop and say so rather than half-installing.
 - **Preferences the user mentions** (a different voice, faster speech, two Macs sharing AirPods) — set the matching knob from the Knobs section at the bottom as part of the install, don't make them come back for it.
 - **A setup that can't run Claude Code hooks at all** — the app itself doesn't care where audio comes from. It plays anything dropped into `/tmp/claude-speech/queue/` as `<epoch>-<sid>.m4a` plus a matching `.json` (the queue contract, documented in [README.md](README.md)). You can write a small producer for whatever tool the user has.
 
@@ -41,8 +42,9 @@ Expected: a path (e.g. `/opt/homebrew/bin/brew`). If missing, install Homebrew f
 
 ```sh
 which claude
+ls -d ~/.claude
 ```
-Expected: a path. Claude Code must already be installed and signed in.
+Expected: `which claude` prints a path, and `~/.claude` exists. Claude Code must already be installed and signed in. If `which claude` prints nothing but `~/.claude` exists, that's fine — it just means the `claude` binary isn't on this shell's `PATH` (common when Claude Code runs from the desktop app or an IDE extension). Continue; nothing later in this doc calls `claude`.
 
 ```sh
 uname -m
@@ -72,8 +74,8 @@ Expected: brew reports each formula installed or already installed, no errors.
 
 What each is for:
 - `jq` — required. The hook parses its JSON input with it; without it nothing renders.
-- `ffmpeg` — required for correct volume. It loudness-normalizes audio to −16 LUFS during encoding. Kokoro's raw output is ~12dB quieter than `say`; without ffmpeg the hook silently falls back to `afconvert`, which has no gain stage, and every reply plays back too quiet.
-- `espeak-ng`, `uv` — needed only for the Kokoro neural voice (Apple Silicon). Skip is harmless on Intel; the hook falls back to `say` automatically.
+- `ffmpeg` — required for correct volume on the Kokoro neural-voice path (so: needed on Apple Silicon, unused on the `say` fallback). It loudness-normalizes audio to −16 LUFS during encoding. Kokoro's raw output is ~12dB quieter than `say`; without ffmpeg the hook silently falls back to `afconvert`, which has no gain stage, and every reply plays back too quiet.
+- `espeak-ng`, `uv` — needed only for the Kokoro neural voice (Apple Silicon). Skipping them is harmless on Intel; the hook falls back to `say` automatically.
 
 Verify ffmpeg specifically, since a quiet install is the least visible failure:
 ```sh
@@ -109,7 +111,7 @@ The model (`mlx-community/Kokoro-82M-bf16`, ~350MB) downloads on first render. D
   --text "Hello, this is SpeakySpeak." --file_prefix /tmp/speakytest --join_audio
 afplay /tmp/speakytest.wav && rm -f /tmp/speakytest*.wav
 ```
-Expected: you hear a synthesized voice say the test sentence. If this step fails for any reason, it is not fatal — the pipeline falls back to macOS `say` automatically. Continue to step 4 and retry this step (then re-run `./install.sh`) later.
+Expected: the command exits without error, `/tmp/speakytest.wav` gets created, and the user hears a synthesized voice say the test sentence. If nobody is at the machine to listen, a clean exit plus a non-empty `.wav` counts as a pass. If this step fails for any reason, it is not fatal — the pipeline falls back to macOS `say` automatically. Continue to step 4 and retry this step (then re-run `./install.sh`) later.
 
 ---
 
@@ -181,7 +183,7 @@ Expected: `valid JSON`, no error.
 ```sh
 open ~/Applications/SpeakySpeak.app
 ```
-Expected: a "Sy" icon appears in the menu bar (left-click for the queue popover, right-click for Settings / Mute / Quit).
+Expected: a "Sy" icon appears in the menu bar (left-click for the queue panel, right-click for Settings / Mute / Quit). You can't see the menu bar yourself, so treat the next command as the real check and ask the user to confirm the icon.
 
 ```sh
 pgrep -f SpeakySpeak.app/Contents/MacOS/SpeakySpeak
@@ -192,11 +194,11 @@ Expected: a process ID (a number). Empty output means the app isn't running — 
 
 ## 7. Test end to end
 
-Hooks load at session start, so start a **new** Claude Code session (not the one running this install) and send it any message.
+Hooks load when a session starts, so the session running this install won't speak — it started before the hook existed. Ask the user to start a **new** Claude Code session (a new terminal window, a new chat in the desktop app, or a new Claude Code panel/tab in VS Code or Cursor) and send it any short message, like "say hello".
 
-Within a few seconds of that new session's reply finishing, expected: you hear the reply spoken aloud, the menu-bar icon shows a queue badge / pulses, and a small floating mini player appears under the icon.
+Within a few seconds of that new session's reply finishing, expected: the reply is spoken aloud, the menu-bar icon shows a queue badge and pulses, and a small floating player appears under the icon.
 
-If you want to verify without a second session, check the logs after any Claude Code turn completes in a session that has the hook wired:
+Then confirm it from the log — this is the part you can check yourself:
 ```sh
 cat /tmp/claude-speech/hook.log
 ```
@@ -237,10 +239,10 @@ All under `~/.claude/`, created by touching/writing the file — no file means d
 
 ### Optional: two Macs sharing one pair of AirPods
 
-If this Mac and another Mac both run SpeakySpeak and share AirPods, they can take turns instead of fighting over playback. On each Mac, write the *other* Mac's Tailscale IP to:
+If this Mac and another Mac both run SpeakySpeak and share AirPods, they can take turns instead of fighting over playback. On each Mac, write the *other* Mac's IP address to the file below. Any address the two Macs can reach each other on works — a Tailscale IP if they use Tailscale, otherwise the local network address (System Settings → Network → Wi-Fi → Details).
 
 ```sh
-echo "<other-mac-tailscale-ip>" > ~/.claude/speak-peer
+echo "<other-mac-ip>" > ~/.claude/speak-peer
 ```
 
 Before auto-playing, each deck asks the peer (TCP port 48765) and waits if the peer is currently speaking, so macOS's AirPods auto-switching hands off cleanly instead of overlapping. Manual plays (clicking a queued item) never wait. If the file is absent, the peer is off, or it's unreachable, the deck just plays — this fails open and is skippable if only one Mac is in use.

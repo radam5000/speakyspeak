@@ -9,9 +9,9 @@ It is a playback layer, not a voice mode: it never touches your input, so you ke
 ## What you need
 
 - **macOS 14 or newer** and **Xcode Command Line Tools** (`xcode-select --install`). The app compiles from source in a few seconds and is ad-hoc signed, so there is no Gatekeeper or notarization dance. Note that *building* wants a current SDK, because the mini player uses macOS 26 Liquid Glass APIs behind availability checks; the app it produces runs on 14+.
-- **Claude Code**, installed and signed in.
+- **Claude Code**, installed and signed in — in a terminal, the desktop app, VS Code, or Cursor. Hooks and settings live in `~/.claude/` regardless of which one you use, so the install is the same. (It's the Claude *Code* Stop hook this hangs off; it does not read the Claude chat app aloud.)
 - **Apple Silicon** for the neural voice (Kokoro via MLX). On Intel it falls back to the built-in macOS `say` voice and everything else works.
-- `jq` (already in `/usr/bin` on recent macOS). `ffmpeg`, `espeak-ng` and `uv` are only needed for the neural voice.
+- `jq` — required by the hook. Recent macOS ships it in `/usr/bin`; if `which jq` comes back empty, `brew install jq`. `ffmpeg`, `espeak-ng` and `uv` are only needed for the neural voice (`ffmpeg` does its loudness normalization; the `say` fallback doesn't use it).
 
 ## Install
 
@@ -20,7 +20,7 @@ git clone https://github.com/radam5000/speakyspeak.git
 cd speakyspeak && ./install.sh
 ```
 
-Then add two hook entries to `~/.claude/settings.json` (`install.sh` prints the exact snippet) and start a new Claude Code session. **[SETUP.md](SETUP.md) is the full step-by-step**, including the neural-voice setup and troubleshooting.
+Then add two hook entries to `~/.claude/settings.json` (`install.sh` prints the exact snippet) and start a new Claude Code session. **[INSTALL.md](INSTALL.md) is the full step-by-step**, including the neural-voice setup and troubleshooting — it's written to be handed to Claude Code, which will run it and adapt it to your setup. ([SETUP.md](SETUP.md) is the older human-readable walkthrough.)
 
 The rest of this README is the architecture and controls reference.
 
@@ -78,7 +78,7 @@ Knobs: `~/.claude/speak-engine` (`kokoro` | `say`; absent = kokoro when installe
 **The whole turn's prose, not just its last paragraph.** A reply is usually split across several assistant text entries with tool calls between them — an answer, an artifact publish, a closing note. The hook once spoke only the final entry, so everything before the last tool call went unread. Two separate jobs do this now, and it matters that they stay separate:
 
 - `extract()` is the **gate** — it decides *when* to speak, and only fires once the transcript's last assistant entry is a settled text entry. This is what keeps mid-turn preambles and the Stop-event flush race from being mistaken for the reply. Don't repurpose it.
-- `gather_turn()` decides *what* — every assistant text entry back to the last real user message. Tool results, meta injections, and the `system`/`frame-link`/`mode` bookkeeping entries are not turn boundaries; subagent (sidechain) and thinking blocks are excluded.
+- `gather_turn()` decides *what* — every assistant text entry back to the nearer of two boundaries: the last real user message, or the entry that was already spoken (its uuid is recorded in `/tmp/claude-speech/.seen-<sid>`, so a turn that resumes without a new user prompt doesn't re-read everything). Tool results, meta injections, and the `system`/`frame-link`/`mode` bookkeeping entries are not turn boundaries; subagent (sidechain) and thinking blocks are excluded.
 
 The gathered text is used only when it still **ends with** the entry the gate settled on; otherwise the hook falls back to that entry alone, so the widening can never speak something the gate didn't approve. Side effect worth knowing: in a long agentic turn you now also hear the short progress lines ("Now the wiki-link fix itself."), because those are on screen too.
 
