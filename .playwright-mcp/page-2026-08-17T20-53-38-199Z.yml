@@ -1,0 +1,173 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - heading "SpeakySpeak" [level=1] [ref=e4]
+    - generic [ref=e5]:
+      - paragraph [ref=e6]:
+        - generic [ref=e7]: Start some Claudes, walk away
+        - generic [ref=e8]: Hear replies as they arrive
+      - generic [ref=e11]:
+        - generic [ref=e12]:
+          - generic [ref=e13]:
+            - generic [ref=e17]: "3"
+            - generic [ref=e18]: ✳ everething
+            - generic [ref=e19]: queued
+          - generic [ref=e20]:
+            - paragraph [ref=e21]: $ claude "refactor the search index"
+            - paragraph [ref=e22]: 34 tests, 6m 12s, done
+          - generic [ref=e23]:
+            - generic [ref=e24]: everething
+            - text: ›
+          - generic [ref=e26]: everething [Fable 5] effort:xhigh git:master▶▶ auto mode on · ← for agents
+        - generic [ref=e28]:
+          - generic [ref=e29]:
+            - generic [ref=e33]: "1"
+            - generic [ref=e34]: ✳ events-site
+            - generic [ref=e35]: queued
+          - generic [ref=e36]:
+            - paragraph [ref=e37]: $ claude "ship today's newsletter build"
+            - paragraph [ref=e38]: deploy finished, 2m 48s
+          - generic [ref=e39]:
+            - generic [ref=e40]: events-site
+            - text: ›
+          - generic [ref=e42]: events-site [Fable 5] effort:xhigh git:master▶▶ auto mode on · ← for agents
+        - generic [ref=e44]:
+          - generic [ref=e45]:
+            - generic [ref=e49]: "2"
+            - generic [ref=e50]: ✳ markemark
+            - generic [ref=e51]: queued
+          - generic [ref=e52]:
+            - paragraph [ref=e53]: $ claude "find the leak in the preview pane"
+            - paragraph [ref=e54]: one line changed, 11m 04s
+          - generic [ref=e55]:
+            - generic [ref=e56]: markemark
+            - text: ›
+          - generic [ref=e58]: markemark [Fable 5] effort:xhigh git:master▶▶ auto mode on · ← for agents
+        - generic [ref=e61]:
+          - generic [ref=e62]:
+            - generic [ref=e69]: speakyspeak
+            - button "Close player" [ref=e70] [cursor=pointer]: ✕
+          - generic [ref=e71]:
+            - button "Previous reply" [ref=e72] [cursor=pointer]: ⏮
+            - button "Back ten seconds" [ref=e73] [cursor=pointer]: ↺10
+            - button "Play the demo reply" [ref=e74] [cursor=pointer]: ▶
+            - button "Forward ten seconds" [ref=e75] [cursor=pointer]: ↻10
+            - button "Next reply" [ref=e76] [cursor=pointer]: ⏭
+        - generic: Press play
+      - generic [ref=e78]:
+        - link "Install" [ref=e79] [cursor=pointer]:
+          - /url: "#install"
+        - paragraph [ref=e80]: Free (and fully local) for macOS
+        - generic: ⌄
+  - generic [ref=e83]:
+    - generic [ref=e84]:
+      - heading "One voice at a time" [level=3] [ref=e88]
+      - paragraph [ref=e89]: Sessions queue instead of talking over each other.
+    - generic [ref=e90]:
+      - heading "AirPods stem controls" [level=3] [ref=e96]
+      - paragraph [ref=e97]: Click to pause, skip ahead, or step back.
+    - generic [ref=e98]:
+      - heading "It waits for you" [level=3] [ref=e101]
+      - paragraph [ref=e102]: Pause it, and new replies queue up quietly.
+    - generic [ref=e103]:
+      - heading "Just the remote" [level=3] [ref=e108]
+      - paragraph [ref=e109]: Drag it anywhere; the full queue lives in the menu bar.
+  - generic [ref=e111]:
+    - heading "A suggested way to work" [level=2] [ref=e112]
+    - paragraph [ref=e113]: Built for this setup. Runs entirely on your Mac — Kokoro voice via MLX, offline and free.
+    - generic [ref=e114]:
+      - generic [ref=e115]:
+        - generic [ref=e116]: "1"
+        - paragraph [ref=e117]: Color-coded tabs , one per project.
+      - generic [ref=e122]:
+        - generic [ref=e123]: "2"
+        - paragraph [ref=e124]: Start long runs, then walk away.
+      - generic [ref=e125]:
+        - generic [ref=e126]: "3"
+        - paragraph [ref=e127]: Replies announce themselves, one at a time, in order.
+      - generic [ref=e128]:
+        - generic [ref=e129]: "4"
+        - paragraph [ref=e130]: "Multi-Mac: per-machine voices, no AirPods tug‑of‑war."
+    - paragraph [ref=e131]: iTerm2 › Session › Edit Session › Tab Color
+  - generic [ref=e133]:
+    - heading "Everything in it" [level=2] [ref=e134]
+    - paragraph [ref=e135]: The full list, in case the thing you're wondering about isn't pictured above.
+    - generic [ref=e136]:
+      - generic [ref=e137]:
+        - heading "The queue" [level=4] [ref=e138]
+        - list [ref=e139]:
+          - listitem [ref=e140]: One at a time — replies play serially, never over each other
+          - listitem [ref=e141]: Newest plays next — fresh replies jump ahead of stale backlog
+          - listitem [ref=e142]: Pause holds everything — new replies wait; a rainbow glow reminds you
+          - listitem [ref=e143]: Skip one reply — drop the track you don't want without stopping the pipeline
+          - listitem [ref=e144]: Survives restarts — the queue is restored on launch, silently
+          - listitem [ref=e145]: Clear played / clear all from the deck footer
+          - listitem [ref=e146]: Reorder the queue — play now, remove, move up or down per row
+      - generic [ref=e147]:
+        - heading "Playback" [level=4] [ref=e148]
+        - list [ref=e149]:
+          - listitem [ref=e150]: Speed selector — voice rate, in the Settings window or the deck
+          - listitem [ref=e151]: Volume slider, with every render loudness‑normalized so replies match
+          - listitem [ref=e152]: Back 10 / forward 10, restart, previous reply, full transport
+          - listitem [ref=e153]: Mute that keeps queueing — chats build up quietly until you're back
+          - listitem [ref=e154]: Global quiet hotkey (⌃⌥⌘Space) — silence the room from any app, no permission prompts
+      - generic [ref=e155]:
+        - heading "The voice" [level=4] [ref=e156]
+        - list [ref=e157]:
+          - listitem [ref=e158]: Kokoro neural voice — runs locally on Apple Silicon via MLX, ~54 voices, free
+          - listitem [ref=e159]: Warm renderer — replies become audio in under a second
+          - listitem [ref=e160]: Automatic fallback to the best installed macOS voice (Intel works too)
+          - listitem [ref=e161]: Voice preview in Settings; changing voice re‑renders what's still queued
+          - listitem [ref=e162]: Per-machine voices — tell your Macs apart by ear
+      - generic [ref=e163]:
+        - heading "AirPods & media keys" [level=4] [ref=e164]
+        - list [ref=e165]:
+          - listitem [ref=e166]: Stem clicks — click to pause, double for next, triple for back
+          - listitem [ref=e167]: Now Playing — Control Center scrubber while speaking, released when idle so your music keys come back
+          - listitem [ref=e168]: Two Macs, one pair — decks take turns instead of fighting over your AirPods
+      - generic [ref=e169]:
+        - heading "What it reads" [level=4] [ref=e170]
+        - list [ref=e171]:
+          - listitem [ref=e172]: The whole reply — every part of a long turn, not just the last paragraph
+          - listitem [ref=e173]: Tuned for the ear — emoji and markdown stripped, paths spoken as filenames, URLs as "link"
+          - listitem [ref=e174]: Never mid-turn noise — it waits for the settled reply, not tool-call chatter
+      - generic [ref=e175]:
+        - heading "The app" [level=4] [ref=e176]
+        - list [ref=e177]:
+          - listitem [ref=e178]: Floating mini player — auto-appears while speaking, drag it anywhere, Liquid Glass or classic frosted
+          - listitem [ref=e179]: Menu-bar icon with queue badge and a pulse while playing; Sy mark or speaker glyph
+          - listitem [ref=e180]: Native Settings window fronting plain dotfiles — shell edits stay in sync
+          - listitem [ref=e181]: Built-in updates — your version in the menu, an ↑ when a new one is out
+          - listitem [ref=e182]: Fully local — no accounts, no telemetry, MIT-licensed, works offline
+  - generic [ref=e184]:
+    - heading "Install" [level=2] [ref=e185]
+    - generic [ref=e186]:
+      - generic [ref=e187]:
+        - generic [ref=e188]: Prompt
+        - button "Copy" [ref=e189] [cursor=pointer]
+      - text: "Install SpeakySpeak on this Mac: clone https://github.com/radam5000/speakyspeak and follow INSTALL.md step by step, verifying each step."
+    - generic [ref=e190]:
+      - paragraph [ref=e191]: Requires macOS 14 or newer, Claude Code, Homebrew, and the Xcode command-line tools.
+      - paragraph [ref=e192]:
+        - link "INSTALL.md" [ref=e193] [cursor=pointer]:
+          - /url: https://github.com/radam5000/speakyspeak/blob/main/INSTALL.md
+        - text: ·
+        - link "github.com/radam5000/speakyspeak" [ref=e194] [cursor=pointer]:
+          - /url: https://github.com/radam5000/speakyspeak
+      - paragraph [ref=e195]: Not exactly your setup? The instructions are written for Claude to adapt — desktop app, VS Code, Cursor, a different voice, two Macs. Just ask it.
+  - generic [ref=e197]:
+    - paragraph [ref=e198]: Also by Adam
+    - generic [ref=e199]:
+      - generic [ref=e200]:
+        - link "MarkeMark" [ref=e201] [cursor=pointer]:
+          - /url: https://markemark.app
+        - paragraph [ref=e202]: Previews Markdown right in Finder, with the spacebar.
+      - generic [ref=e203]:
+        - link "everething" [ref=e204] [cursor=pointer]:
+          - /url: https://everething.com
+        - paragraph [ref=e205]: An offline knowledge tablet — no internet required.
+      - generic [ref=e206]:
+        - link "LinkedIn" [ref=e207] [cursor=pointer]:
+          - /url: https://www.linkedin.com/in/adamraabe
+        - paragraph [ref=e208]: Feel free to say hi and connect if this helped you.
+  - contentinfo [ref=e209]:
+    - generic [ref=e210]: MIT · macOS 14+ · Claude Code

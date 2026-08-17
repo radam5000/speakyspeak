@@ -965,6 +965,7 @@ func fmtRate(_ r: Double) -> String {
 
 struct DeckView: View {
     @ObservedObject var deck = Deck.shared
+    @ObservedObject private var updater = Updater.shared
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -1023,6 +1024,21 @@ struct DeckView: View {
     private func footer(_ theme: Theme) -> some View {
         let hasDone = deck.items.contains { $0.state == .done }
         return HStack(spacing: 12) {
+            // Update button lives bottom-left (Adam's expected spot). It sits
+            // BEFORE the hint text so hovering other controls never hides it —
+            // and it must not use hoverHint itself (hint + conditional slot
+            // would flicker). Plain .help tooltip only.
+            if let v = updater.availableVersion {
+                Button(action: { Updater.shared.performUpdate() }) {
+                    Label("Update to \(v)", systemImage: "arrow.up.circle.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.plain)
+                .help("Update to \(v) — pulls, rebuilds, and relaunches in a few seconds")
+                .accessibilityLabel("Update to \(v)")
+            }
             Text(deck.hint)
                 .font(.system(size: 10, design: .serif).italic())
                 .foregroundStyle(theme.secondary)
