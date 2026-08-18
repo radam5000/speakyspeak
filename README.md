@@ -6,6 +6,10 @@ Everything runs on your machine. No cloud TTS, no API keys, no subscription. Fre
 
 It is a playback layer, not a voice mode: it never touches your input, so you keep typing normally and just hear the answers.
 
+## Feedback
+
+Found a bug or want something changed? Email **[hi@speakyspeak.com](mailto:hi@speakyspeak.com)** — a human reads it and replies. Prefer public tracking? Open a [GitHub Issue](https://github.com/radam5000/speakyspeak/issues). Fastest of all: right-click the menu-bar icon → **Send Feedback…**, which pre-fills an email with your version, engine, and recent log lines so the report arrives debuggable.
+
 ## Claude installs it — that's the point
 
 There is no installer download. You paste one prompt into Claude Code and **your own Claude builds the app from source on your machine**, checking every step against its expected result as it goes ([INSTALL.md](INSTALL.md) is written for it to execute). This is deliberate, not a shortcut:

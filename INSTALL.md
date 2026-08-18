@@ -246,6 +246,8 @@ Expected: a `spoke <id> engine=... chars=... secs=...` line per spoken reply (ad
 | Voice sounds robotic / like the built-in macOS voice | Kokoro isn't installed, the daemon/CLI failed, or the **active voice isn't cached** (see the delay row above) and both Kokoro paths failed | Check `hook.log` for `engine=say` lines; cache the active voice per the delay row, redo step 3 if Kokoro was never installed, then `./install.sh` again; or in System Settings → Accessibility → Spoken Content → System Voice, download a better voice (e.g. Ava Premium) — the hook finds it automatically |
 | No menu-bar icon | App isn't running | `open ~/Applications/SpeakySpeak.app` |
 
+Still stuck after the table? Email **hi@speakyspeak.com** with the step that failed and the last lines of `/tmp/claude-speech/hook.log` — a human reads it and replies.
+
 ---
 
 ## Knobs (plain files, read by the hook and app)

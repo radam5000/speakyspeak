@@ -2917,6 +2917,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
+        let feedback = NSMenuItem(title: "Send Feedback…", action: #selector(sendFeedback), keyEquivalent: "")
+        feedback.target = self
+        menu.addItem(feedback)
         menu.addItem(.separator())
         let mute = NSMenuItem(title: Deck.shared.muted ? "Unmute" : "Mute",
                               action: #selector(toggleMute), keyEquivalent: "")
@@ -2935,6 +2938,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc private func runUpdate() { Updater.shared.performUpdate() }
+
+    // Opens the user's mail client addressed to hi@speakyspeak.com with the
+    // diagnostic context pre-filled (version, macOS, resolved engine, hook.log
+    // tail), so a report arrives debuggable without a follow-up round trip.
+    // The reporter never has to know the address or what to include.
+    @objc private func sendFeedback() {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        var engine = SettingsStore.shared.engine.rawValue
+        if engine.isEmpty {   // .auto — resolve the same way the hook does
+            let kokoro = NSHomeDirectory() + "/.local/bin/mlx_audio.tts.generate"
+            engine = FileManager.default.isExecutableFile(atPath: kokoro) ? "kokoro" : "say"
+        }
+        var logTail = ""
+        if let log = try? String(contentsOfFile: "/tmp/claude-speech/hook.log", encoding: .utf8) {
+            logTail = log.split(separator: "\n").suffix(6).joined(separator: "\n")
+        }
+        let body = """
+
+
+        ---
+        SpeakySpeak \(Updater.shared.localVersion) · macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) · engine: \(engine)
+        hook.log tail:
+        \(logTail)
+        """
+        var comps = URLComponents()
+        comps.scheme = "mailto"
+        comps.path = "hi@speakyspeak.com"
+        comps.queryItems = [URLQueryItem(name: "subject", value: "SpeakySpeak feedback"),
+                            URLQueryItem(name: "body", value: body)]
+        if let url = comps.url { NSWorkspace.shared.open(url) }
+    }
     @objc private func toggleMute() { Deck.shared.muted.toggle() }
     @objc private func openSettings() { SettingsWindowController.shared.show() }
 

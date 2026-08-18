@@ -3,7 +3,7 @@
 ## Inbox
 
 ## Now
-- [ ] ss-feedback-email — create hi@speakyspeak.com on Fastmail (+ catch-all), put it on the site/README/INSTALL. Approved by Adam 2026-08-17; step one of PLAN-LAUNCH.md Phase 0 (~2-3h incl. domain onboarding, see ~/.config/fastmail/README.md). FEEDBACK.md must be added to release-public.sh excludes in the SAME commit that creates it.
+- [~] ss-feedback-email — repo side DONE 2026-08-17 (site footer + README + INSTALL + in-app "Send Feedback…" mailto with version/engine/log context; FEEDBACK.md created + excluded from the mirror in the same commit; weekly-sweep rule in CLAUDE.md). BLOCKED on two permission-classifier denials Adam must clear: (1) Fastmail add-domain form (Claude's tab is parked at the Add domain page) — or Adam adds speakyspeak.com + hi@ + catch-all + identity name "SpeakySpeak" himself, ~2 min; (2) the Cloudflare DNS-write curl (records are scripted and ready). Then: round-trip verify, deploy site, bump VERSION, release-public.sh. Do NOT publish the address (site deploy / release) before the round-trip passes.
 - [ ] ss-voiceover-audit — VoiceOver audit of the APP (not the site; the site passed 2026-08-17). Approved to happen before any launch post. 12 accessibilityLabel calls exist, no traits/values tested.
 
 ## Next
@@ -17,6 +17,7 @@
 - [ ] ss-updater-feedback-poll — consider surfacing update progress (update.log tail) in the UI; today success is silent until relaunch.
 
 ## Done
+- [x] 2026-08-17 — 1.0.6: Sasha's install report actioned (voice-cache bug fixed at all 5 sync points + install.sh pre-cache, Settings voice mismatch, inverted step-7 verification + hook success logging, step 6.5 agent self-verify); README/site now own the "Claude installs it" story.
 - [x] 2026-08-17 — speakyspeak.com wired (Cloudflare DNS, grey cloud) and live.
 - [x] 2026-08-17 — neon sign removed (kept in site/stickers/neon-sign-snippet.html); mobile sideways-scroll fixed.
 - [x] 2026-08-17 — fold/2x2/caption-jump fixes shipped; hero full-page on tall desktops; stack scaled up on mobile + desktop.
