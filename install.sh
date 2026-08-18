@@ -24,6 +24,19 @@ SHIM="$HOME/.local/bin/mlx_audio.tts.generate"
 LABEL="com.adamraabe.speakyspeak-tts"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 if [ -x "$SHIM" ]; then
+  # Pre-cache the voice the hook will actually request BEFORE the daemon starts:
+  # the daemon runs with HF_HUB_OFFLINE=1 and can never fetch a missing voice
+  # itself, so an uncached voice means every first render fails to the cold CLI
+  # (Sasha's install report 2026-08-17, Defect 1). This render also pulls the
+  # model on a truly fresh machine. Voice default: bf_lily (5 sync points, grep it).
+  VOICE=$(cat "$HOME/.claude/speak-voice-kokoro" 2>/dev/null || echo "bf_lily")
+  if ! ls "$HOME/.cache/huggingface/hub/models--prince-canuma--Kokoro-82M/snapshots"/*/voices/"$VOICE".safetensors >/dev/null 2>&1; then
+    echo "Caching Kokoro voice '$VOICE' (first time may also download the ~350MB model)..."
+    "$SHIM" --model mlx-community/Kokoro-82M-bf16 --voice "$VOICE" \
+      --text "Voice ready." --file_prefix /tmp/speaky-precache --join_audio >/dev/null 2>&1 \
+      && rm -f /tmp/speaky-precache*.wav \
+      || echo "WARNING: could not cache voice '$VOICE' — first replies will use the slower cold render until it succeeds online."
+  fi
   PYBIN=$(head -1 "$SHIM" | sed 's/^#!//')
   mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
   cat > "$PLIST" <<PL
@@ -96,5 +109,5 @@ If this is a first install, wire the hooks in ~/.claude/settings.json:
 Optional knobs (plain files):
   ~/.claude/speak-off    hard kill — replies aren't rendered at all
   ~/.claude/speak-rate   words per minute; absent = voice's natural pace
-  ~/.claude/speak-voice  say voice, default "Ava (Premium)"
+  ~/.claude/speak-voice  say voice; absent = best installed voice is auto-probed
 EOF

@@ -276,16 +276,23 @@ render_via_daemon() {   # writes "$QUEUE/.tmp-$id.wav"; returns 0 on success
 }
 
 rendered=0
+engine_used=say
+t0=$(date +%s)
 if [ "$ENGINE" = kokoro ] && [ -x "$KOKORO_BIN" ]; then
-  render_via_daemon \
-    || "$KOKORO_BIN" --model "$KOKORO_MODEL" --voice "$KOKORO_VOICE" --join_audio \
+  if render_via_daemon; then
+    engine_used=kokoro-warm
+  else
+    "$KOKORO_BIN" --model "$KOKORO_MODEL" --voice "$KOKORO_VOICE" --join_audio \
          --file_prefix "$QUEUE/.tmp-$id" --text "$clean" >>"$LOG" 2>&1 \
-    || true
+      || true
+    engine_used=kokoro-cold
+  fi
   if [ -s "$QUEUE/.tmp-$id.wav" ] && convert_wav "$QUEUE/.tmp-$id.wav" "$QUEUE/.tmp-$id.m4a"; then
     rendered=1
   else
     echo "--- $(date) $sid kokoro render failed, falling back to say" >> "$LOG"
     rm -f "$QUEUE/.tmp-$id.m4a"
+    engine_used=say
   fi
   rm -f "$QUEUE/.tmp-$id.wav"
 fi
@@ -312,6 +319,11 @@ jq -n --arg session "$sid" --arg project "$proj" --arg title "$title" --arg prev
   '{session: $session, project: $project, title: $title, preview: $preview, text: $text, created: $created}' \
   > "$QUEUE/.tmp-$id.json"
 mv "$QUEUE/.tmp-$id.json" "$QUEUE/$id.json"
+
+# ONE success line per spoken reply. Until 2026-08-17 this log recorded only
+# failures, so a healthy install produced an EMPTY hook.log and INSTALL.md's
+# verification read that as "hook never fired" (Sasha's install report, 3b).
+echo "$(date) $sid spoke $id engine=$engine_used chars=${#clean} secs=$(( $(date +%s) - t0 ))" >> "$LOG"
 
 if [ "$app_ok" != 1 ]; then
   # fallback if the app is missing: serialized afplay (lock dir = the queue's mutex)

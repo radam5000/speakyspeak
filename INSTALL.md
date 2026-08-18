@@ -61,6 +61,8 @@ cd ~/speakyspeak
 ```
 Expected: the folder `~/speakyspeak` now exists and contains `install.sh`, `README.md`, `main.swift`.
 
+The location is free-form — `~/speakyspeak` is just a sensible default; a projects folder like `~/Development/speakyspeak` works the same (the app records wherever the clone lives).
+
 **Do not delete this folder after install.** The app checks for updates daily and shows "Update to X…" in its right-click menu; updating re-pulls from this exact clone. Deleting it breaks future updates, not just the source copy.
 
 ---
@@ -94,7 +96,7 @@ uv tool install --python 3.12 "mlx-audio[tts]==0.4.1" \
   --with "misaki[en]" \
   --with "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 ```
-Expected: `Installed 1 executable: mlx_audio.tts.generate` (or similar uv success output), no errors.
+Expected: uv reports the installed executables with no errors — currently `Installed 5 executables` including `mlx_audio.tts.generate` (older mlx-audio versions reported 1; any success output that includes `mlx_audio.tts.generate` counts).
 
 ```sh
 ls ~/.local/bin/mlx_audio.tts.generate
@@ -105,9 +107,11 @@ Expected: the file exists.
 
 The model (`mlx-community/Kokoro-82M-bf16`, ~350MB) downloads on first render. Do that here, not on the user's first Claude Code reply — and not after step 4, because the warm-TTS LaunchAgent that `install.sh` sets up runs offline and will crash-loop if the model isn't cached yet.
 
+The voice must be `bf_lily` — that is the pipeline's default voice, and the warm daemon runs offline, so it can only use voices cached here (a different voice would cache the wrong file and the first replies would fall back to the slow cold render).
+
 ```sh
 ~/.local/bin/mlx_audio.tts.generate \
-  --model mlx-community/Kokoro-82M-bf16 --voice af_heart \
+  --model mlx-community/Kokoro-82M-bf16 --voice bf_lily \
   --text "Hello, this is SpeakySpeak." --file_prefix /tmp/speakytest --join_audio
 afplay /tmp/speakytest.wav && rm -f /tmp/speakytest*.wav
 ```
@@ -192,17 +196,34 @@ Expected: a process ID (a number). Empty output means the app isn't running — 
 
 ---
 
+## 6.5 (optional but recommended). Verify playback yourself, before involving the user
+
+The queue contract lets you prove "the app plays audio" without a new session: render a short clip and drop it into the queue exactly the way the hook does.
+
+```sh
+V=$(cat ~/.claude/speak-voice-kokoro 2>/dev/null || echo bf_lily)
+~/.local/bin/mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --voice "$V" \
+  --text "SpeakySpeak install verified." --file_prefix /tmp/speakyverify --join_audio
+ID="$(date +%s)-installtest"
+ffmpeg -y -i /tmp/speakyverify.wav -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:a aac -b:a 96k "/tmp/claude-speech/queue/$ID.m4a" 2>/dev/null
+printf '{"session":"installtest","project":"install","title":"Install test","preview":"SpeakySpeak install verified.","text":"SpeakySpeak install verified.","created":%s}' "$(date +%s)" > "/tmp/claude-speech/queue/$ID.json"
+sleep 6; tail -5 /tmp/claude-speech/deck.log; rm -f /tmp/speakyverify*.wav
+```
+Expected: the clip plays aloud and `deck.log` shows `queued` → `playing` → `finished` for the test id. (On Intel/`say`-only setups, replace the first two lines with `say -o /tmp/claude-speech/queue/$ID.m4a --data-format=aac "SpeakySpeak install verified."`.) This isolates the app half; step 7 then tests only the hook half.
+
+---
+
 ## 7. Test end to end
 
-Hooks load when a session starts, so the session running this install won't speak — it started before the hook existed. Ask the user to start a **new** Claude Code session (a new terminal window, a new chat in the desktop app, or a new Claude Code panel/tab in VS Code or Cursor) and send it any short message, like "say hello".
+On current Claude Code, `settings.json` hook changes are picked up without restarting — so THIS session's next reply may already be spoken aloud. Send any short reply and listen. If it speaks: step 7 is done. (On older Claude Code versions hooks only load at session start; in that case ask the user to start a **new** session — a new terminal window, a new chat in the desktop app, or a new Claude Code panel/tab in VS Code or Cursor — and send it any short message.)
 
-Within a few seconds of that new session's reply finishing, expected: the reply is spoken aloud, the menu-bar icon shows a queue badge and pulses, and a small floating player appears under the icon.
+Within a few seconds of the reply finishing, expected: the reply is spoken aloud, the menu-bar icon shows a queue badge and pulses, and a small floating player appears under the icon.
 
 Then confirm it from the log — this is the part you can check yourself:
 ```sh
-cat /tmp/claude-speech/hook.log
+tail -5 /tmp/claude-speech/hook.log
 ```
-Expected: log lines showing the hook ran (transcript path found, engine used, render success). Empty or missing file means the hook never fired — recheck step 5.
+Expected: a `spoke <id> engine=... chars=... secs=...` line per spoken reply (added 2026-08-17). **Note:** on installs of versions before 1.0.6 the hook logged only FAILURES, so an empty `hook.log` there means everything worked; success lives in `deck.log` (`queued` → `playing` → `finished`). Never report a broken install while `deck.log` shows playback.
 
 ---
 
@@ -219,10 +240,10 @@ Expected: log lines showing the hook ran (transcript path found, engine used, re
 | Symptom | Cause | Fix |
 |---|---|---|
 | Audio plays but is much quieter than normal speech | `ffmpeg` not installed; hook fell back to `afconvert` with no gain stage | `brew install ffmpeg`, then just wait for the next reply (no reinstall needed — the hook checks for ffmpeg on every run) |
-| ~3 second delay before every reply starts speaking | Warm TTS daemon isn't running, or the Kokoro model wasn't downloaded before the daemon started (crash-looping) | Do the test render in step 3, then `launchctl kickstart -k gui/$(id -u)/com.adamraabe.speakyspeak-tts`; check `~/Library/Logs/speakyspeak-tts.err.log` for crash detail |
-| No speech at all, and `/tmp/claude-speech/hook.log` has no new lines after a turn | Hook not registered in `~/.claude/settings.json`, or the session predates the registration | Recheck step 5's JSON is valid and merged correctly, then start a **new** Claude Code session (hooks load at session start, not mid-session) |
+| ~3 second delay before every reply starts speaking | Warm TTS daemon isn't running, OR the daemon is fine but the **active voice isn't cached** — the daemon runs offline (`HF_HUB_OFFLINE=1`) and can't fetch a missing voice, so every render falls to the cold CLI. `tts-daemon.log` showing `IncompleteSnapshotError` with a `voices/*.safetensors` file confirms it | Cache the voice the hook actually uses: `V=$(cat ~/.claude/speak-voice-kokoro 2>/dev/null \|\| echo bf_lily); ~/.local/bin/mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --voice "$V" --text ok --file_prefix /tmp/vfix --join_audio; rm -f /tmp/vfix*.wav`, then `launchctl kickstart -k gui/$(id -u)/com.adamraabe.speakyspeak-tts`; check `~/Library/Logs/speakyspeak-tts.err.log` for other crash detail |
+| No speech at all, and `/tmp/claude-speech/hook.log` has no new lines after a turn | Hook not registered in `~/.claude/settings.json`, or the session predates the registration on an older Claude Code | Recheck step 5's JSON is valid and merged correctly; if still silent, start a **new** Claude Code session |
 | No speech at all, but `hook.log` shows the hook ran | `~/.claude/speak-off` exists (hard kill), or the deck is muted | `rm -f ~/.claude/speak-off`; right-click the menu-bar icon and check Mute is off |
-| Voice sounds robotic / like the built-in macOS voice | Kokoro isn't installed, or the daemon/CLI failed and it fell back to `say` | Redo step 3 (test render must succeed), then `./install.sh` again to set up the warm daemon; or in System Settings → Accessibility → Spoken Content → System Voice, download a better voice (e.g. Ava Premium) — the hook finds it automatically |
+| Voice sounds robotic / like the built-in macOS voice | Kokoro isn't installed, the daemon/CLI failed, or the **active voice isn't cached** (see the delay row above) and both Kokoro paths failed | Check `hook.log` for `engine=say` lines; cache the active voice per the delay row, redo step 3 if Kokoro was never installed, then `./install.sh` again; or in System Settings → Accessibility → Spoken Content → System Voice, download a better voice (e.g. Ava Premium) — the hook finds it automatically |
 | No menu-bar icon | App isn't running | `open ~/Applications/SpeakySpeak.app` |
 
 ---
@@ -234,7 +255,7 @@ All under `~/.claude/`, created by touching/writing the file — no file means d
 - `speak-off` — hard kill; touch this file to stop rendering entirely (`rm -f` to re-enable)
 - `speak-rate` — words per minute, `say` engine only
 - `speak-voice` — `say` voice name (e.g. `Ava (Premium)`); absent = best installed voice is auto-probed
-- `speak-voice-kokoro` — Kokoro voice id (default `af_heart`; ~54 voices in the model card)
+- `speak-voice-kokoro` — Kokoro voice id (default `bf_lily`; ~54 voices in the model card). New voices must be cached online once (the warm daemon runs offline) — `install.sh` handles the active voice, and auditioning a voice in Settings caches it too
 - `speak-engine` — force `say` or `kokoro`; absent = kokoro when installed, else say
 
 ### Optional: two Macs sharing one pair of AirPods

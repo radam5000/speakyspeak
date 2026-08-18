@@ -2251,7 +2251,10 @@ final class SettingsStore: ObservableObject {
 
     @Published var enabled: Bool = true            { didSet { guard !loading else { return }; setFlag("speak-off", present: !enabled) } }
     @Published var engine: SpeechEngine = .auto    { didSet { guard !loading else { return }; writeOrRemove("speak-engine", engine.rawValue) } }
-    @Published var kokoroVoice: String = "af_heart"{ didSet { guard !loading else { return }; writeOrRemove("speak-voice-kokoro", kokoroVoice) } }
+    // bf_lily = the project default voice; must match speak-reply.sh's fallback
+    // (five sync points — grep bf_lily). Was af_heart: Settings showed Heart
+    // while the hook rendered Lily (Sasha's install report, Defect 2).
+    @Published var kokoroVoice: String = "bf_lily"{ didSet { guard !loading else { return }; writeOrRemove("speak-voice-kokoro", kokoroVoice) } }
     @Published var sayVoice: String = ""           { didSet { guard !loading else { return }; writeOrRemove("speak-voice", sayVoice) } }
     @Published var sayRate: String = ""            { didSet { guard !loading else { return }; writeOrRemove("speak-rate", sayRate) } }
     @Published var menuBarStyle: MenuBarStyle = .sy { didSet { guard !loading else { return }; UserDefaults.standard.set(menuBarStyle.rawValue, forKey: "menuBarStyle") } }
@@ -2291,7 +2294,7 @@ final class SettingsStore: ObservableObject {
         loading = true
         enabled = !FileManager.default.fileExists(atPath: path("speak-off"))
         engine = SpeechEngine(rawValue: read("speak-engine")) ?? .auto
-        let kv = read("speak-voice-kokoro"); kokoroVoice = kv.isEmpty ? "af_heart" : kv
+        let kv = read("speak-voice-kokoro"); kokoroVoice = kv.isEmpty ? "bf_lily" : kv
         sayVoice = read("speak-voice")
         sayRate = read("speak-rate")
         loading = false

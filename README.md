@@ -6,6 +6,21 @@ Everything runs on your machine. No cloud TTS, no API keys, no subscription. Fre
 
 It is a playback layer, not a voice mode: it never touches your input, so you keep typing normally and just hear the answers.
 
+## Claude installs it — that's the point
+
+There is no installer download. You paste one prompt into Claude Code and **your own Claude builds the app from source on your machine**, checking every step against its expected result as it goes ([INSTALL.md](INSTALL.md) is written for it to execute). This is deliberate, not a shortcut:
+
+- Every user of this app already has Claude Code — the installer is sitting right there.
+- The riskiest step is merging the hook into your existing `~/.claude/settings.json` without clobbering it. Claude reads your config and merges carefully; a blind script can't.
+- It's more fun. You watch the thing get compiled for you, and afterwards the same Claude can customize it — a different voice, when it speaks, what it skips — because it just read the whole codebase.
+
+```
+Install SpeakySpeak on this Mac: clone https://github.com/radam5000/speakyspeak
+and follow INSTALL.md step by step, verifying each step.
+```
+
+Prefer to drive? INSTALL.md doubles as a deterministic human walkthrough — every step is one command plus its expected output.
+
 ## What you need
 
 - **macOS 14 or newer** and **Xcode Command Line Tools** (`xcode-select --install`). The app compiles from source in a few seconds and is ad-hoc signed, so there is no Gatekeeper or notarization dance. Note that *building* wants a current SDK, because the mini player uses macOS 26 Liquid Glass APIs behind availability checks; the app it produces runs on 14+.
@@ -71,7 +86,7 @@ Default engine is **Kokoro-82M**, a local neural TTS running on MLX — free, on
 **Warm daemon (the speed path).** Spawning the Kokoro CLI cold on every reply paid a ~3s model-load tax each time. `hooks/tts-daemon.py` (a LaunchAgent, `com.adamraabe.speakyspeak-tts`) loads Kokoro **once** at login, warms the MLX graph, and then renders each reply in ~0.3–0.9s. The Stop hook talks to it through a filesystem request queue (`/tmp/claude-speech/render/*.req` → `<out>.wav` + `*.done`, with a `daemon.alive` heartbeat), and **only** when the heartbeat is fresh — on a stale/absent heartbeat, timeout, or error it falls straight through to the cold CLI (then `say`), so the daemon is a pure speedup with no new failure mode. `install.sh` writes + bootstraps the LaunchAgent (skipped if mlx-audio isn't installed). Logs: `/tmp/claude-speech/tts-daemon.log`. Runs offline (`HF_HUB_OFFLINE=1`).
  Installed as a uv tool (pinned: `uv tool install --python 3.12 "mlx-audio[tts]==0.4.1" --with "misaki[en]" --with "en_core_web_sm @ <spacy-models release wheel URL>"`; 0.4.4 has a length-dependent broadcast_shapes regression, [issue #784](https://github.com/Blaizzy/mlx-audio/issues/784) — re-test newer versions before unpinning). Requires `brew install espeak-ng`. If the binary is missing or a render fails, the hook falls back to `say` automatically.
 
-Knobs: `~/.claude/speak-engine` (`kokoro` | `say`; absent = kokoro when installed), `~/.claude/speak-voice-kokoro` (default `af_heart`; ~54 voices in the model card). `say`-only knobs: `~/.claude/speak-rate` (wpm), `~/.claude/speak-voice` (absent = best installed voice is probed — Premium/Enhanced preferred, system default as last resort, so a fresh Mac never fails silent). The deck only cares about the .m4a/.json contract, so any engine that produces those works. The in-app Settings window writes these same files (and re-reads them on open), so the GUI and shell edits stay in sync.
+Knobs: `~/.claude/speak-engine` (`kokoro` | `say`; absent = kokoro when installed), `~/.claude/speak-voice-kokoro` (default `bf_lily`; ~54 voices in the model card — new voices need one online render to cache, since the warm daemon runs offline; `install.sh` pre-caches the active one). `say`-only knobs: `~/.claude/speak-rate` (wpm), `~/.claude/speak-voice` (absent = best installed voice is probed — Premium/Enhanced preferred, system default as last resort, so a fresh Mac never fails silent). The deck only cares about the .m4a/.json contract, so any engine that produces those works. The in-app Settings window writes these same files (and re-reads them on open), so the GUI and shell edits stay in sync.
 
 ## What gets spoken
 

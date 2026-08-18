@@ -27,7 +27,13 @@ RENDER = "/tmp/claude-speech/render"
 ALIVE = os.path.join(RENDER, "daemon.alive")
 LOG = "/tmp/claude-speech/tts-daemon.log"
 MODEL_ID = "mlx-community/Kokoro-82M-bf16"
-DEFAULT_VOICE = "af_heart"
+# The project default voice. It appears in FIVE places that must stay in sync
+# (grep the id when changing): speak-reply.sh KOKORO_VOICE fallback, this file,
+# main.swift SettingsStore (x2), install.sh's pre-cache, and the docs.
+# 2026-08-17: was af_heart here while the hook asked for bf_lily — the offline
+# daemon could never fetch it and every fresh install's first reply fell to the
+# cold CLI (Sasha's install report, Defect 1).
+DEFAULT_VOICE = "bf_lily"
 STALE_SECS = 90          # a request older than this: the hook already gave up
 IDLE_SLEEP = 0.02        # poll cadence when no work is pending
 ALIVE_EVERY = 2.0        # heartbeat interval
@@ -76,8 +82,14 @@ def main():
     # too (the initial compile is ~1.5s; pay it here, not on Adam's first reply).
     try:
         warm = os.path.join(RENDER, ".warmup")
+        # warm on the voice the hook will actually request, not just the default
+        try:
+            with open(os.path.expanduser("~/.claude/speak-voice-kokoro")) as vf:
+                warm_voice = vf.read().strip() or DEFAULT_VOICE
+        except OSError:
+            warm_voice = DEFAULT_VOICE
         with open(LOG, "a") as lf, contextlib.redirect_stdout(lf), contextlib.redirect_stderr(lf):
-            generate_audio(text="Ready.", model=model, voice=DEFAULT_VOICE,
+            generate_audio(text="Ready.", model=model, voice=warm_voice,
                            join_audio=True, file_prefix=warm,
                            audio_format="wav", verbose=False)
         for f in glob.glob(warm + "*"):
