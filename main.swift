@@ -1431,27 +1431,59 @@ final class Updater: ObservableObject {
         check(manual: true)
     }
 
+    // API first: raw.githubusercontent.com sits behind a ~5-minute CDN cache,
+    // which told a user "You're on the latest version" one minute after a
+    // release shipped (2026-08-18). The contents API is uncached; the
+    // unauthenticated rate limit (60/hour/IP) is ample for a daily poll plus
+    // manual clicks. The raw URL stays as the fallback for rate-limit or API
+    // outage — a slightly stale answer beats no answer.
+    private let apiVersionURL = URL(string: "https://api.github.com/repos/radam5000/speakyspeak/contents/VERSION?ref=main")!
+
     private func check(manual: Bool = false) {
+        var req = URLRequest(url: apiVersionURL)
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue("application/vnd.github.raw", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: req) { [weak self] data, resp, _ in
+            guard let self else { return }
+            let ok = (resp as? HTTPURLResponse)?.statusCode == 200
+            let remote = ok ? data.flatMap { String(data: $0, encoding: .utf8) }?
+                .trimmingCharacters(in: .whitespacesAndNewlines) : nil
+            if let remote, !remote.isEmpty, remote.count < 32 {
+                self.applyCheck(remote: remote, manual: manual)
+            } else {
+                self.checkRawFallback(manual: manual)
+            }
+        }.resume()
+    }
+
+    private func checkRawFallback(manual: Bool) {
         var req = URLRequest(url: versionURL)
         req.cachePolicy = .reloadIgnoringLocalCacheData
         URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
             guard let self else { return }
             let remote = data.flatMap { String(data: $0, encoding: .utf8) }?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            DispatchQueue.main.async {
-                self.checking = false
-                guard let remote, !remote.isEmpty, remote.count < 32 else {
+            if let remote, !remote.isEmpty, remote.count < 32 {
+                self.applyCheck(remote: remote, manual: manual)
+            } else {
+                DispatchQueue.main.async {
+                    self.checking = false
                     if manual { self.checkResult = "Couldn't reach the update server." }
-                    return
-                }
-                self.availableVersion = Self.newer(remote, than: self.localVersion) ? remote : nil
-                if self.availableVersion != nil {
-                    dlog("update available: \(remote) (local \(self.localVersion))")
-                } else if manual {
-                    self.checkResult = "You're on the latest version."
                 }
             }
         }.resume()
+    }
+
+    private func applyCheck(remote: String, manual: Bool) {
+        DispatchQueue.main.async {
+            self.checking = false
+            self.availableVersion = Self.newer(remote, than: self.localVersion) ? remote : nil
+            if self.availableVersion != nil {
+                dlog("update available: \(remote) (local \(self.localVersion))")
+            } else if manual {
+                self.checkResult = "You're on the latest version."
+            }
+        }
     }
 
     private static func newer(_ a: String, than b: String) -> Bool {
