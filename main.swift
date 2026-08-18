@@ -2692,6 +2692,31 @@ final class VoicePreviewer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         state = .playing
     }
 
+    // The hook loudness-normalizes every queued reply to -16 LUFS (Kokoro's
+    // raw output is ~12dB quieter than say). Anything the APP renders must go
+    // through the same gain stage or it plays noticeably quieter than replies
+    // — Adam heard exactly that on the first spoken update confirmation
+    // (2026-08-18). Same ffmpeg filter as the hook's convert_wav; no ffmpeg
+    // (Intel without brew) = raw audio, same as the hook's afconvert branch.
+    // The normalized file is cached next to the raw one; callers that must
+    // re-render (announce) delete both first.
+    private func normalized(_ raw: URL) -> URL {
+        let out = raw.deletingPathExtension().appendingPathExtension("norm.wav")
+        let fm = FileManager.default
+        if fm.fileExists(atPath: out.path) { return out }
+        guard let ffmpeg = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+            .first(where: { fm.isExecutableFile(atPath: $0) }) else { return raw }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: ffmpeg)
+        p.arguments = ["-hide_banner", "-loglevel", "error", "-y", "-i", raw.path,
+                       "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", out.path]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run()
+        p.waitUntilExit()
+        return (p.terminationStatus == 0 && fm.fileExists(atPath: out.path)) ? out : raw
+    }
+
     // One-line spoken announcements from the app itself — today only the
     // post-update confirmation (Adam's pick, 2026-08-18: the talking app
     // announces its own update; no modal, no notification). Same engine and
@@ -2708,12 +2733,15 @@ final class VoicePreviewer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             DispatchQueue.global(qos: .userInitiated).async { [self] in
                 let fm = FileManager.default
                 try? fm.createDirectory(at: previewDir, withIntermediateDirectories: true)
-                try? fm.removeItem(at: out)   // never cache: the text carries a version
+                // never cache: the text carries a version (raw AND normalized)
+                try? fm.removeItem(at: out)
+                try? fm.removeItem(at: out.deletingPathExtension().appendingPathExtension("norm.wav"))
                 var ok = kokoroDaemonRender(text: text, voice: s.kokoroVoice, out: out)
                 if !ok { ok = renderViaCLI(text: text, voice: s.kokoroVoice, out: out) }
+                let playURL = ok ? self.normalized(out) : out
                 DispatchQueue.main.async {
                     guard gen == self.generation, self.state == .rendering else { return }
-                    guard ok, let p = try? AVAudioPlayer(contentsOf: out) else {
+                    guard ok, let p = try? AVAudioPlayer(contentsOf: playURL) else {
                         dlog("announce: kokoro render failed")
                         self.state = .idle
                         return
@@ -2747,9 +2775,12 @@ final class VoicePreviewer: NSObject, ObservableObject, AVAudioPlayerDelegate {
             var ok = fm.fileExists(atPath: out.path)
             if !ok { ok = kokoroDaemonRender(text: text, voice: voice, out: out) }
             if !ok { ok = renderViaCLI(text: text, voice: voice, out: out) }
+            // Previews advertise "how Claude's replies will sound" — so they
+            // must match reply loudness, not Kokoro's quiet raw output.
+            let playURL = ok ? self.normalized(out) : out
             DispatchQueue.main.async {
                 guard gen == self.generation, self.state == .rendering else { return }
-                guard ok, let p = try? AVAudioPlayer(contentsOf: out) else {
+                guard ok, let p = try? AVAudioPlayer(contentsOf: playURL) else {
                     dlog("voice preview: kokoro render failed (\(voice))")
                     self.state = .idle
                     return
