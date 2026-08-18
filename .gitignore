@@ -1,3 +1,5 @@
 *.app/
 .DS_Store
 design-refs/
+__pycache__/
+*.pyc
