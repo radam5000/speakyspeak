@@ -1413,6 +1413,12 @@ final class Updater: ObservableObject {
         let d = UserDefaults.standard
         if let prev = d.string(forKey: "lastRunVersion"), prev != localVersion {
             justUpdatedFrom = prev
+            // Explicit post-update confirmation: without this, the first
+            // Settings visit after a relaunch showed only the idle "Checked
+            // automatically once a day" caption and the update read as
+            // unconfirmed (Adam, 2026-08-18). The silent startup check below
+            // leaves checkResult alone unless it finds something newer.
+            checkResult = "Updated from \(prev) ✓ You're on the latest version."
         }
         d.set(localVersion, forKey: "lastRunVersion")
         check()
