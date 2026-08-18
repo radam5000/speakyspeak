@@ -1419,6 +1419,19 @@ final class Updater: ObservableObject {
             // unconfirmed (Adam, 2026-08-18). The silent startup check below
             // leaves checkResult alone unless it finds something newer.
             checkResult = "Updated from \(prev) ✓ You're on the latest version."
+            // Spoken confirmation, once, on the first launch after an update —
+            // the app's own voice IS the "it worked" signal (and proof the
+            // pipeline survived the update). Never on normal launches; silent
+            // when speech is off, muted, or something is already playing
+            // (Settings keeps the visual record either way). Delayed a beat so
+            // launch work settles and the deck's state is real.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [self] in
+                let deck = Deck.shared
+                guard deck.enabled, !deck.muted, !deck.isPlaying,
+                      VoicePreviewer.shared.state == .idle else { return }
+                let spoken = localVersion.replacingOccurrences(of: ".", with: " point ")
+                VoicePreviewer.shared.announce("SpeakySpeak updated to \(spoken).")
+            }
         }
         d.set(localVersion, forKey: "lastRunVersion")
         check()
@@ -2656,12 +2669,16 @@ final class VoicePreviewer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
         let name = voice.isEmpty ? nil
             : String(voice.prefix { $0 != "(" }).trimmingCharacters(in: .whitespaces)
+        runSay(s, voice: voice, text: sample(name))
+    }
+
+    private func runSay(_ s: SettingsStore, voice: String, text: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/say")
         var args: [String] = []
         if !voice.isEmpty { args += ["-v", voice] }
         if !s.sayRate.isEmpty { args += ["-r", s.sayRate] }
-        args.append(sample(name))
+        args.append(text)
         p.arguments = args
         p.terminationHandler = { [weak self] proc in
             DispatchQueue.main.async {
@@ -2673,6 +2690,49 @@ final class VoicePreviewer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         guard (try? p.run()) != nil else { dlog("voice preview: say failed to launch"); return }
         sayProcess = p
         state = .playing
+    }
+
+    // One-line spoken announcements from the app itself — today only the
+    // post-update confirmation (Adam's pick, 2026-08-18: the talking app
+    // announces its own update; no modal, no notification). Same engine and
+    // voice as replies. Callers gate on mute/enabled/busy; this only guards
+    // against double-starting the previewer.
+    func announce(_ text: String) {
+        guard state == .idle else { return }
+        let s = SettingsStore.shared
+        if s.usingKokoro && s.kokoroInstalled {
+            state = .rendering
+            generation += 1
+            let gen = generation
+            let out = previewDir.appendingPathComponent("announce.wav")
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
+                let fm = FileManager.default
+                try? fm.createDirectory(at: previewDir, withIntermediateDirectories: true)
+                try? fm.removeItem(at: out)   // never cache: the text carries a version
+                var ok = kokoroDaemonRender(text: text, voice: s.kokoroVoice, out: out)
+                if !ok { ok = renderViaCLI(text: text, voice: s.kokoroVoice, out: out) }
+                DispatchQueue.main.async {
+                    guard gen == self.generation, self.state == .rendering else { return }
+                    guard ok, let p = try? AVAudioPlayer(contentsOf: out) else {
+                        dlog("announce: kokoro render failed")
+                        self.state = .idle
+                        return
+                    }
+                    p.delegate = self
+                    p.volume = Float(Deck.shared.volume)
+                    p.play()
+                    self.player = p
+                    self.state = .playing
+                }
+            }
+        } else {
+            var voice = s.sayVoice
+            if voice.isEmpty {
+                voice = ["Ava (Premium)", "Ava (Enhanced)", "Zoe (Premium)", "Samantha (Enhanced)", "Samantha"]
+                    .first { s.sayVoices.contains($0) } ?? ""
+            }
+            runSay(s, voice: voice, text: text)
+        }
     }
 
     private func previewKokoro(voice: String) {
