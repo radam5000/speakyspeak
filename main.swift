@@ -3003,15 +3003,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // is now just Settings / Mute / Quit.
     private func showMenu(_ button: NSStatusBarButton) {
         let menu = NSMenu()
+        // Mute first: it's the item reached for most often (Adam, 2026-08-18).
+        let mute = NSMenuItem(title: Deck.shared.muted ? "Unmute" : "Mute",
+                              action: #selector(toggleMute), keyEquivalent: "")
+        mute.target = self
+        menu.addItem(mute)
         let settingsTitle = Updater.shared.availableVersion == nil
             ? "Settings…" : "Settings… (update available)"
         let settings = NSMenuItem(title: settingsTitle, action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
-        let mute = NSMenuItem(title: Deck.shared.muted ? "Unmute" : "Mute",
-                              action: #selector(toggleMute), keyEquivalent: "")
-        mute.target = self
-        menu.addItem(mute)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit SpeakySpeak",
                                 action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
