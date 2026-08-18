@@ -8,7 +8,7 @@ It is a playback layer, not a voice mode: it never touches your input, so you ke
 
 ## Feedback
 
-Found a bug or want something changed? Email **[hi@speakyspeak.com](mailto:hi@speakyspeak.com)** — a human reads it and replies. Prefer public tracking? Open a [GitHub Issue](https://github.com/radam5000/speakyspeak/issues). Fastest of all: right-click the menu-bar icon → **Send Feedback…**, which pre-fills an email with your version, engine, and recent log lines so the report arrives debuggable.
+Found a bug or want something changed? Email **[hi@speakyspeak.com](mailto:hi@speakyspeak.com)** and a human reads it and replies. Prefer public tracking? Open a [GitHub Issue](https://github.com/radam5000/speakyspeak/issues). Fastest of all: open **Settings ▸ About & support** (right-click the menu-bar icon → Settings…) and use **Email a report…**, which pre-fills an email with your version, engine, and recent log lines so the report arrives debuggable. **Have Claude write the report** does the same job the other way: it copies a prompt you paste into Claude Code, which reads the logs, writes the report, and opens the draft for you to send.
 
 ## Claude installs it — that's the point
 
@@ -61,7 +61,8 @@ App source and hook sources both live in this repo. Run `./install.sh` to build 
 - **Global hotkey — ⌃⌥⌘Space** ("quiet now") — system-wide; stops the current reply (skips to the next if queued, else silent). Registered via Carbon, so no Accessibility/Input-Monitoring permission prompt. No-op when nothing's playing (never cold-starts audio).
 - **Rows** — the row itself is inert; the left icon is pure status (orange dot = queued, gray check = played). Actions are on the right: hover for play-now / remove, chevrons reorder the queue.
 - **Bottom-right footer** — sweep icon clears all played replies; trash icon deletes everything, played and queued. Every icon has a hover tooltip.
-- **Settings** — gear in the footer, or right-click the icon → Settings…. A native grouped window for the knobs that used to require editing dotfiles by hand (engine + voice), plus playback/appearance. See below.
+- **Settings** — gear in the footer, or right-click the icon → Settings…. A native grouped window for the knobs that used to require editing dotfiles by hand (engine + voice), plus playback/appearance, plus **About & support** (version, updates, and the two ways to send a report). See below.
+- **Updates** — when a new version is out, the menu-bar icon grows a ↑ next to it and the deck's footer shows "Update X available"; both point at **Settings ▸ About & support**, where the "Update to X…" button pulls, rebuilds, and relaunches. The same section has a "Check for updates" button when you're already current (it also checks once a day on its own).
 - **Quit** — right-click the menu-bar icon → Quit (also right-click anywhere on the panel itself).
 - `~/.claude/speak-off` remains a shell-side hard kill (hook won't render at all); the deck watches it and shows "Speech is off" when present.
 - **AirPods / media keys** — the deck publishes to macOS Now Playing while a reply is speaking (or paused mid-reply, or more are queued): one AirPods stem click pauses/resumes, double-click skips to the next reply, triple-click restarts/steps back; Control Center gets a working scrubber. The claim is released when the deck goes idle, so headphone clicks return to Music/Spotify.

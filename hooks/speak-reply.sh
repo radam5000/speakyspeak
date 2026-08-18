@@ -2,9 +2,13 @@
 # Stop hook: render Claude's final reply to audio and enqueue it for
 # SpeakySpeak (~/.claude/tools/speakyspeak), which plays items one at
 # a time in arrival order — no overlapping sessions.
-LOG=/tmp/claude-speech/hook.log
-QUEUE=/tmp/claude-speech/queue
-RENDER=/tmp/claude-speech/render     # warm TTS daemon's request queue
+# SPEAKYSPEAK_SPEECH_ROOT exists for the fixture tests in tests/ (isolated
+# queue, no interference with a live deck watching /tmp/claude-speech).
+# Production never sets it; the app hard-codes /tmp/claude-speech.
+SPEECH_ROOT="${SPEAKYSPEAK_SPEECH_ROOT:-/tmp/claude-speech}"
+LOG=$SPEECH_ROOT/hook.log
+QUEUE=$SPEECH_ROOT/queue
+RENDER=$SPEECH_ROOT/render           # warm TTS daemon's request queue
 ALIVE="$RENDER/daemon.alive"         # daemon heartbeat; hook only uses it when fresh
 APP="$HOME/Applications/SpeakySpeak.app"
 [ -f "$HOME/.claude/speak-off" ] && exit 0
@@ -62,7 +66,7 @@ fi
 { [ -z "$title" ] || [ "$title" = "null" ]; } && title="$proj"
 
 mkdir -p "$QUEUE"
-find /tmp/claude-speech \( -name '*.m4a' -o -name '*.json' -o -name '*.end' -o -name '*.done' -o -name '.seen-*' \) -mtime +2 -delete 2>/dev/null
+find "$SPEECH_ROOT" \( -name '*.m4a' -o -name '*.json' -o -name '*.end' -o -name '*.done' -o -name '.seen-*' \) -mtime +2 -delete 2>/dev/null
 
 # Returns "<uuid>\t<timestamp>\t<text>" — but ONLY when the last assistant
 # entry in the file is a text entry. Mid-turn preambles ("Quick check on X
@@ -139,7 +143,7 @@ gather_turn() {
 #   (b) was already there but is unspoken (uuid != .seen) AND fresh (<120s) —
 #       the fast-flush case.
 # Stale backlog can never qualify; if nothing fresh lands in 30s, stay silent.
-SEEN="/tmp/claude-speech/.seen-$sid"
+SEEN="$SPEECH_ROOT/.seen-$sid"
 last_seen=$(cat "$SEEN" 2>/dev/null || echo "")
 start_out=$(extract)
 start_uuid=${start_out%%$'\t'*}
@@ -329,12 +333,12 @@ if [ "$app_ok" != 1 ]; then
   # fallback if the app is missing: serialized afplay (lock dir = the queue's mutex)
   echo "--- $(date) $sid SpeakySpeak missing, afplay fallback" >> "$LOG"
   i=0
-  while ! mkdir /tmp/claude-speech/.lock 2>/dev/null; do
+  while ! mkdir "$SPEECH_ROOT/.lock" 2>/dev/null; do
     sleep 0.5
     i=$((i + 1))
     [ "$i" -gt 600 ] && exit 0
   done
-  trap 'rmdir /tmp/claude-speech/.lock 2>/dev/null' EXIT
+  trap 'rmdir "$SPEECH_ROOT/.lock" 2>/dev/null' EXIT
   afplay "$QUEUE/$id.m4a"
 fi
 exit 0

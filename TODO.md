@@ -3,7 +3,7 @@
 ## Inbox
 
 ## Now
-- [~] ss-feedback-email — repo side DONE 2026-08-17 (site footer + README + INSTALL + in-app "Send Feedback…" mailto with version/engine/log context; FEEDBACK.md created + excluded from the mirror in the same commit; weekly-sweep rule in CLAUDE.md). BLOCKED on two permission-classifier denials Adam must clear: (1) Fastmail add-domain form (Claude's tab is parked at the Add domain page) — or Adam adds speakyspeak.com + hi@ + catch-all + identity name "SpeakySpeak" himself, ~2 min; (2) the Cloudflare DNS-write curl (records are scripted and ready). Then: round-trip verify, deploy site, bump VERSION, release-public.sh. Do NOT publish the address (site deploy / release) before the round-trip passes.
+- [ ] ss-loop-promote-draft — the feedback loop's first trust promotion (triage → draft): earliest ~2026-09-01 after two clean weeks of triage, and ONLY on Adam's explicit go. Check first: classifications right, dedupe real, ack replies ones Adam would have sent, digest reads well. Promote = LOOP_MODE in scripts/loop/*.plist + bootout/copy/bootstrap.
 - [ ] ss-voiceover-audit — VoiceOver audit of the APP (not the site; the site passed 2026-08-17). Approved to happen before any launch post. 12 accessibilityLabel calls exist, no traits/values tested.
 
 ## Next
@@ -17,6 +17,7 @@
 - [ ] ss-updater-feedback-poll — consider surfacing update progress (update.log tail) in the UI; today success is silent until relaunch.
 
 ## Done
+- [x] 2026-08-18 — ss-feedback-email COMPLETE + the whole feedback loop LIVE: hi@speakyspeak.com + catch-all on Fastmail (identities "SpeakySpeak", round-trip verified: Gmail inbox outbound, external inbound past greylist), DNS via Cloudflare; address on site footer / README / INSTALL / in-app "Send Feedback…" (1.0.7 released); FEEDBACK.md ledger + mirror exclude; verify.sh (compile + 4 hook-contract fixture tests, all green) ; daily triage loop under launchd 07:45 (scripts/loop/, first real run clean same night); registered in AUTOMATION.md + mother-routine registry; fmmail.py gained fetch/--in-reply-to.
 - [x] 2026-08-17 — 1.0.6: Sasha's install report actioned (voice-cache bug fixed at all 5 sync points + install.sh pre-cache, Settings voice mismatch, inverted step-7 verification + hook success logging, step 6.5 agent self-verify); README/site now own the "Claude installs it" story.
 - [x] 2026-08-17 — speakyspeak.com wired (Cloudflare DNS, grey cloud) and live.
 - [x] 2026-08-17 — neon sign removed (kept in site/stickers/neon-sign-snippet.html); mobile sideways-scroll fixed.

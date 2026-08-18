@@ -63,7 +63,7 @@ Expected: the folder `~/speakyspeak` now exists and contains `install.sh`, `READ
 
 The location is free-form — `~/speakyspeak` is just a sensible default; a projects folder like `~/Development/speakyspeak` works the same (the app records wherever the clone lives).
 
-**Do not delete this folder after install.** The app checks for updates daily and shows "Update to X…" in its right-click menu; updating re-pulls from this exact clone. Deleting it breaks future updates, not just the source copy.
+**Do not delete this folder after install.** The app checks for updates daily and shows "Update to X…" in Settings ▸ About & support (the menu-bar icon grows a ↑ when one is waiting); updating re-pulls from this exact clone. Deleting it breaks future updates, not just the source copy.
 
 ---
 

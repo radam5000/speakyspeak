@@ -1024,20 +1024,26 @@ struct DeckView: View {
     private func footer(_ theme: Theme) -> some View {
         let hasDone = deck.items.contains { $0.state == .done }
         return HStack(spacing: 12) {
-            // Update button lives bottom-left (Adam's expected spot). It sits
+            // Update cue lives bottom-left (Adam's expected spot). It sits
             // BEFORE the hint text so hovering other controls never hides it —
             // and it must not use hoverHint itself (hint + conditional slot
             // would flicker). Plain .help tooltip only.
+            //
+            // It opens Settings rather than updating on the spot: since
+            // 2026-08-17 the update button lives in Settings ▸ About & support,
+            // so there is exactly one place that starts an update. Sitting
+            // inside the existing footer row also means no vertical layout
+            // shift when an update appears or goes away.
             if let v = updater.availableVersion {
-                Button(action: { Updater.shared.performUpdate() }) {
-                    Label("Update to \(v)", systemImage: "arrow.up.circle.fill")
+                Button(action: { SettingsWindowController.shared.show() }) {
+                    Label("Update \(v) available", systemImage: "arrow.up.circle.fill")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(Color.accentColor)
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(.plain)
-                .help("Update to \(v) — pulls, rebuilds, and relaunches in a few seconds")
-                .accessibilityLabel("Update to \(v)")
+                .help("Update \(v) is available. Click to open Settings and install it.")
+                .accessibilityLabel("Update \(v) available, open Settings")
             }
             Text(deck.hint)
                 .font(.system(size: 10, design: .serif).italic())
@@ -1467,6 +1473,68 @@ final class Updater: ObservableObject {
             ">> /tmp/claude-speech/update.log 2>&1 && pkill -x SpeakySpeak; " +
             "sleep 1; open -g \"$HOME/Applications/SpeakySpeak.app\""]
         try? p.run()
+    }
+}
+
+// MARK: - Feedback
+//
+// Two ways to report a problem, both reachable from Settings ▸ About & support
+// (they used to live in the status-item menu; that menu got too tall to fit on
+// short screens, 2026-08-17). openMailReport() is the one-click path; the
+// clipboard prompt is for people who'd rather have their own Claude Code
+// gather the logs and write the mail for them.
+enum Feedback {
+    static let address = "hi@speakyspeak.com"
+
+    // Opens the user's mail client addressed to hi@speakyspeak.com with the
+    // diagnostic context pre-filled (version, macOS, resolved engine, hook.log
+    // tail), so a report arrives debuggable without a follow-up round trip.
+    // The reporter never has to know the address or what to include.
+    static func openMailReport() {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        var engine = SettingsStore.shared.engine.rawValue
+        if engine.isEmpty {   // .auto — resolve the same way the hook does
+            let kokoro = NSHomeDirectory() + "/.local/bin/mlx_audio.tts.generate"
+            engine = FileManager.default.isExecutableFile(atPath: kokoro) ? "kokoro" : "say"
+        }
+        var logTail = ""
+        if let log = try? String(contentsOfFile: "/tmp/claude-speech/hook.log", encoding: .utf8) {
+            logTail = log.split(separator: "\n").suffix(6).joined(separator: "\n")
+        }
+        let body = """
+
+
+        ---
+        SpeakySpeak \(Updater.shared.localVersion) · macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) · engine: \(engine)
+        hook.log tail:
+        \(logTail)
+        """
+        var comps = URLComponents()
+        comps.scheme = "mailto"
+        comps.path = address
+        comps.queryItems = [URLQueryItem(name: "subject", value: "SpeakySpeak feedback"),
+                            URLQueryItem(name: "body", value: body)]
+        if let url = comps.url { NSWorkspace.shared.open(url) }
+    }
+
+    // Pasted into the user's own Claude Code session. The VERSION path is the
+    // one build.sh installs (Contents/Resources/VERSION) — keep them in step.
+    static let claudePrompt = """
+    SpeakySpeak, the macOS menu-bar app that reads Claude Code replies aloud, is misbehaving and I want to send a bug report.
+
+    1. Read the last 40 lines of /tmp/claude-speech/hook.log.
+    2. Read ~/Library/Logs/speakyspeak-tts.err.log if it exists.
+    3. Read the installed version in ~/Applications/SpeakySpeak.app/Contents/Resources/VERSION.
+    4. Ask me to describe the problem in a sentence or two, then write a short plain report: my description, the version, my macOS version, and the log lines that look relevant.
+    5. Open a pre-filled draft with: open "mailto:hi@speakyspeak.com?subject=SpeakySpeak%20report&body=<the url-encoded report>"
+
+    Do not send anything yourself. I will read the draft and send it.
+    """
+
+    static func copyClaudePrompt() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(claudePrompt, forType: .string)
     }
 }
 
@@ -2543,6 +2611,8 @@ struct SettingsView: View {
     @ObservedObject var deck = Deck.shared
     @ObservedObject var previewer = VoicePreviewer.shared
     @ObservedObject var updater = Updater.shared
+    // Inline "Copied." confirmation on the Claude-prompt button; clears itself.
+    @State private var promptCopied = false
 
     var body: some View {
         Form {
@@ -2612,15 +2682,28 @@ struct SettingsView: View {
                 Text("“Always visible” keeps the mini panel on screen as a persistent controller; otherwise it appears only while a reply is being spoken.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Updates") {
-                LabeledContent("Version", value: updater.localVersion)
+            // Version, updating and reporting a problem all live here: the
+            // status-item menu used to carry them and grew too tall to fit on
+            // short screens (2026-08-17). This is the only place an update is
+            // started; the popover and the menu bar just point at it.
+            Section("About & support") {
+                LabeledContent("Version") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("SpeakySpeak \(updater.localVersion)")
+                        if let from = updater.justUpdatedFrom {
+                            Text("updated from \(from) ✓")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
                 if let v = updater.availableVersion {
-                    Button("Update to \(v) now") { Updater.shared.performUpdate() }
+                    Button("Update to \(v)…") { Updater.shared.performUpdate() }
+                        .buttonStyle(.borderedProminent)
                     Text("Pulls the latest, rebuilds, and relaunches in a few seconds.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     LabeledContent {
-                        Button(updater.checking ? "Checking…" : "Check for Updates") {
+                        Button(updater.checking ? "Checking…" : "Check for updates") {
                             Updater.shared.checkNow()
                         }
                         .disabled(updater.checking)
@@ -2629,6 +2712,20 @@ struct SettingsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                Button("Email a report…") { Feedback.openMailReport() }
+                Text("Opens a mail draft to \(Feedback.address) with your version, engine and the last few log lines filled in. Add what went wrong and send it.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Have Claude write the report") {
+                    Feedback.copyClaudePrompt()
+                    promptCopied = true
+                    // Self-clearing: the Settings window is reused for the
+                    // app's whole life, so onAppear can't be relied on to
+                    // reset this the next time it opens.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 6) { promptCopied = false }
+                }
+                Text(promptCopied ? "Copied. Paste it into Claude Code."
+                                  : "Copies a prompt that tells your Claude Code to gather the logs and draft the mail.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -2900,75 +2997,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    // Kept to 3 rows (4 with the update cue). A taller menu scrolled off the
+    // top of short screens for one user, 2026-08-17 — so version, update and
+    // feedback all moved into Settings ▸ About & support, and the menu's job
+    // is now just Settings / Mute / Quit.
     private func showMenu(_ button: NSStatusBarButton) {
         let menu = NSMenu()
-        // Version is otherwise invisible (no About box, no dock): state it
-        // here, and say plainly when this run is fresh off an update.
-        let vTitle: String
-        if let from = Updater.shared.justUpdatedFrom {
-            vTitle = "SpeakySpeak \(Updater.shared.localVersion) — updated from \(from) ✓"
-        } else {
-            vTitle = "SpeakySpeak \(Updater.shared.localVersion)"
-        }
-        let vItem = NSMenuItem(title: vTitle, action: nil, keyEquivalent: "")
-        vItem.isEnabled = false
-        menu.addItem(vItem)
-        menu.addItem(.separator())
-        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        let settingsTitle = Updater.shared.availableVersion == nil
+            ? "Settings…" : "Settings… (update available)"
+        let settings = NSMenuItem(title: settingsTitle, action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
-        let feedback = NSMenuItem(title: "Send Feedback…", action: #selector(sendFeedback), keyEquivalent: "")
-        feedback.target = self
-        menu.addItem(feedback)
-        menu.addItem(.separator())
         let mute = NSMenuItem(title: Deck.shared.muted ? "Unmute" : "Mute",
                               action: #selector(toggleMute), keyEquivalent: "")
         mute.target = self
         menu.addItem(mute)
         menu.addItem(.separator())
-        if let v = Updater.shared.availableVersion {
-            let up = NSMenuItem(title: "Update to \(v)…", action: #selector(runUpdate), keyEquivalent: "")
-            up.target = self
-            menu.addItem(up)
-            menu.addItem(.separator())
-        }
         menu.addItem(NSMenuItem(title: "Quit SpeakySpeak",
                                 action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
     }
 
-    @objc private func runUpdate() { Updater.shared.performUpdate() }
-
-    // Opens the user's mail client addressed to hi@speakyspeak.com with the
-    // diagnostic context pre-filled (version, macOS, resolved engine, hook.log
-    // tail), so a report arrives debuggable without a follow-up round trip.
-    // The reporter never has to know the address or what to include.
-    @objc private func sendFeedback() {
-        let os = ProcessInfo.processInfo.operatingSystemVersion
-        var engine = SettingsStore.shared.engine.rawValue
-        if engine.isEmpty {   // .auto — resolve the same way the hook does
-            let kokoro = NSHomeDirectory() + "/.local/bin/mlx_audio.tts.generate"
-            engine = FileManager.default.isExecutableFile(atPath: kokoro) ? "kokoro" : "say"
-        }
-        var logTail = ""
-        if let log = try? String(contentsOfFile: "/tmp/claude-speech/hook.log", encoding: .utf8) {
-            logTail = log.split(separator: "\n").suffix(6).joined(separator: "\n")
-        }
-        let body = """
-
-
-        ---
-        SpeakySpeak \(Updater.shared.localVersion) · macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) · engine: \(engine)
-        hook.log tail:
-        \(logTail)
-        """
-        var comps = URLComponents()
-        comps.scheme = "mailto"
-        comps.path = "hi@speakyspeak.com"
-        comps.queryItems = [URLQueryItem(name: "subject", value: "SpeakySpeak feedback"),
-                            URLQueryItem(name: "body", value: body)]
-        if let url = comps.url { NSWorkspace.shared.open(url) }
-    }
     @objc private func toggleMute() { Deck.shared.muted.toggle() }
     @objc private func openSettings() { SettingsWindowController.shared.show() }
 
@@ -3004,7 +3053,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // visible without opening the menu; the tooltip says what to do.
         if let v = Updater.shared.availableVersion {
             title += " ↑"
-            tip += "\nUpdate to \(v) available — right-click to install."
+            tip += "\nUpdate to \(v) available. Open Settings to install it."
         }
         button.title = title
         button.toolTip = tip
