@@ -14,7 +14,7 @@
 - [ ] ss-a11y-page — dedicated accessibility page idea (parked 2026-08-17 when the visible transcript expander was pulled; sr-only transcript remains in the page).
 
 ## Later
-- [ ] ss-updater-feedback-poll — consider surfacing update progress (update.log tail) in the UI; today success is silent until relaunch.
+- [x] 2026-08-18 — ss-updater-feedback-poll CLOSED by 1.0.10: updater rewritten after a real field failure (silent pkill no-op on the 1.0.8→1.0.9 hop) — marker-file completion, self-terminate + waiter relaunch, live progress/failure UI in Settings, every step logged.
 
 ## Done
 - [x] 2026-08-18 — ss-feedback-email COMPLETE + the whole feedback loop LIVE: hi@speakyspeak.com + catch-all on Fastmail (identities "SpeakySpeak", round-trip verified: Gmail inbox outbound, external inbound past greylist), DNS via Cloudflare; address on site footer / README / INSTALL / in-app "Send Feedback…" (1.0.7 released); FEEDBACK.md ledger + mirror exclude; verify.sh (compile + 4 hook-contract fixture tests, all green) ; daily triage loop under launchd 07:45 (scripts/loop/, first real run clean same night); registered in AUTOMATION.md + mother-routine registry; fmmail.py gained fetch/--in-reply-to.

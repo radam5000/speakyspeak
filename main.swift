@@ -1035,15 +1035,24 @@ struct DeckView: View {
             // inside the existing footer row also means no vertical layout
             // shift when an update appears or goes away.
             if let v = updater.availableVersion {
+                let busy: Bool = {
+                    switch updater.phase {
+                    case .running, .relaunching: return true
+                    default: return false
+                    }
+                }()
                 Button(action: { SettingsWindowController.shared.show() }) {
-                    Label("Update \(v) available", systemImage: "arrow.up.circle.fill")
+                    Label(busy ? "Updating…" : "Update \(v) available",
+                          systemImage: "arrow.up.circle.fill")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(Color.accentColor)
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(.plain)
-                .help("Update \(v) is available. Click to open Settings and install it.")
-                .accessibilityLabel("Update \(v) available, open Settings")
+                .disabled(busy)
+                .help(busy ? "Update in progress. Progress is in Settings."
+                           : "Update \(v) is available. Click to open Settings and install it.")
+                .accessibilityLabel(busy ? "Update in progress" : "Update \(v) available, open Settings")
             }
             Text(deck.hint)
                 .font(.system(size: 10, design: .serif).italic())
@@ -1456,23 +1465,99 @@ final class Updater: ObservableObject {
         return false
     }
 
-    // Pull + reinstall + relaunch, all from a detached shell so it survives
-    // this process being replaced. install.sh swaps the bundle on disk (the
-    // running instance keeps its inode), then the script restarts the app.
+    // Update progress, surfaced in Settings. Rewritten 2026-08-18 after a
+    // real field failure: the old one-shot chain ended in
+    // `... && pkill -x SpeakySpeak; open -g ...`, and on the 1.0.8->1.0.9
+    // update the pkill silently did nothing from the app-spawned shell (the
+    // same command worked instantly from a terminal; cause never isolated).
+    // install.sh had already succeeded, so the user saw a working button,
+    // no feedback, and no relaunch — the worst combination. The redesign
+    // removes the external kill entirely: the child script only pulls,
+    // builds, and writes a marker; the APP notices the marker, shows state,
+    // and terminates itself while a waiter process relaunches it.
+    enum UpdatePhase {
+        case idle
+        case running
+        case relaunching
+        case failed(String)
+    }
+    @Published var phase: UpdatePhase = .idle
+
+    private static let installedMarker = "/tmp/claude-speech/.update-installed"
+    private static let failedMarker = "/tmp/claude-speech/.update-failed"
+
     func performUpdate() {
+        if case .running = phase { return }
+        if case .relaunching = phase { return }
         let src = UserDefaults.standard.string(forKey: "srcPath") ?? ""
         guard !src.isEmpty, FileManager.default.isExecutableFile(atPath: src + "/install.sh") else {
             NSWorkspace.shared.open(URL(string: Self.repoPage)!)
             return
         }
         dlog("updating from \(src)")
+        phase = .running
+
+        // Every step's output lands in update.log — the old chain logged only
+        // install.sh, which made its one field failure undiagnosable from logs.
+        let script = """
+        LOG=/tmp/claude-speech/update.log
+        mkdir -p /tmp/claude-speech
+        rm -f \(Self.installedMarker) \(Self.failedMarker)
+        {
+          echo "=== update started $(date) ==="
+          cd \"\(src)\" && git pull --ff-only && ./install.sh
+        } >> "$LOG" 2>&1
+        rc=$?
+        if [ $rc -eq 0 ]; then
+          echo "=== update install ok $(date) ===" >> "$LOG"
+          touch \(Self.installedMarker)
+        else
+          echo "=== update FAILED rc=$rc $(date) ===" >> "$LOG"
+          echo "a step failed (rc=$rc); log: /tmp/claude-speech/update.log" > \(Self.failedMarker)
+        fi
+        """
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = ["-c", script]
+        do { try p.run() } catch {
+            phase = .failed("could not start the updater: \(error.localizedDescription)")
+            return
+        }
+
+        let deadline = Date().addingTimeInterval(300)
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            let fm = FileManager.default
+            if fm.fileExists(atPath: Self.installedMarker) {
+                t.invalidate()
+                dlog("update installed; relaunching")
+                self.phase = .relaunching
+                self.relaunch()
+            } else if let msg = try? String(contentsOfFile: Self.failedMarker, encoding: .utf8) {
+                t.invalidate()
+                let reason = msg.trimmingCharacters(in: .whitespacesAndNewlines)
+                dlog("update failed: \(reason)")
+                self.phase = .failed(reason)
+            } else if Date() > deadline {
+                t.invalidate()
+                dlog("update timed out")
+                self.phase = .failed("timed out after 5 minutes; log: /tmp/claude-speech/update.log")
+            }
+        }
+    }
+
+    // Quit ourselves and let a detached waiter reopen the new bundle. The
+    // waiter keys off our pid actually exiting, so there is no kill race and
+    // no reliance on signalling a GUI app from a child shell.
+    private func relaunch() {
+        let pid = ProcessInfo.processInfo.processIdentifier
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = ["-c",
-            "cd \"\(src)\" && git pull --ff-only && ./install.sh " +
-            ">> /tmp/claude-speech/update.log 2>&1 && pkill -x SpeakySpeak; " +
-            "sleep 1; open -g \"$HOME/Applications/SpeakySpeak.app\""]
+            "while /bin/kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; " +
+            "open -g \"$HOME/Applications/SpeakySpeak.app\""]
         try? p.run()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
     }
 }
 
@@ -2697,10 +2782,28 @@ struct SettingsView: View {
                     }
                 }
                 if let v = updater.availableVersion {
-                    Button("Update to \(v)…") { Updater.shared.performUpdate() }
-                        .buttonStyle(.borderedProminent)
-                    Text("Pulls the latest, rebuilds, and relaunches in a few seconds.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    // The update runs for ~a minute; every state is visible
+                    // here (2026-08-18: a silent updater cost a real user a
+                    // stalled update with a working-looking button).
+                    switch updater.phase {
+                    case .running:
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Updating to \(v)… pulling and rebuilding, about a minute.")
+                        }
+                    case .relaunching:
+                        Text("Update installed ✓ Relaunching…")
+                    case .failed(let reason):
+                        Button("Update to \(v)…") { Updater.shared.performUpdate() }
+                            .buttonStyle(.borderedProminent)
+                        Text("The last try failed: \(reason)")
+                            .font(.caption).foregroundStyle(.red)
+                    case .idle:
+                        Button("Update to \(v)…") { Updater.shared.performUpdate() }
+                            .buttonStyle(.borderedProminent)
+                        Text("Pulls the latest, rebuilds, and relaunches in about a minute.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 } else {
                     LabeledContent {
                         Button(updater.checking ? "Checking…" : "Check for updates") {
