@@ -1,14 +1,14 @@
 # SpeakySpeak
 
-![Start some Claudes, walk away. Hear replies as they arrive.](docs/hero.png)
+[![Start some Claudes, walk away. Hear replies as they arrive. Three Claude Code sessions and the SpeakySpeak mini player.](docs/hero.png)](https://speakyspeak.com)
+
+**This picture is [a live demo on speakyspeak.com](https://speakyspeak.com)** — press play there and hear three real replies read aloud.
 
 **A macOS menu-bar deck that reads Claude Code's replies aloud.** When Claude finishes a turn, a Stop hook renders the reply with a local neural voice and queues it. Replies play **one at a time**, so several parallel Claude sessions never talk over each other.
 
 Everything runs on your machine. No cloud TTS, no API keys, no subscription. Free and MIT-licensed.
 
 It is a playback layer, not a voice mode: it never touches your input, so you keep typing normally and just hear the answers.
-
-![Several Claude Code sessions running in parallel, with the SpeakySpeak mini player reading the finished reply](docs/deck-player.png)
 
 ## Feedback
 
