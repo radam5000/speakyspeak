@@ -2818,7 +2818,7 @@ struct SettingsView: View {
                 Button("Email a report…") { Feedback.openMailReport() }
                 Text("Opens a mail draft to \(Feedback.address) with your version, engine and the last few log lines filled in. Add what went wrong and send it.")
                     .font(.caption).foregroundStyle(.secondary)
-                Button("Have Claude write the report") {
+                Button("Have Claude write a report") {
                     Feedback.copyClaudePrompt()
                     promptCopied = true
                     // Self-clearing: the Settings window is reused for the
@@ -3111,8 +3111,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                               action: #selector(toggleMute), keyEquivalent: "")
         mute.target = self
         menu.addItem(mute)
+        menu.addItem(.separator())   // even spacing: Mute / Settings / Quit each get their own band
+        let updBusy: Bool = {
+            switch Updater.shared.phase {
+            case .running, .relaunching: return true
+            default: return false
+            }
+        }()
         let settingsTitle = Updater.shared.availableVersion == nil
-            ? "Settings…" : "Settings… (update available)"
+            ? "Settings…" : (updBusy ? "Settings… (updating…)" : "Settings… (update available)")
         let settings = NSMenuItem(title: settingsTitle, action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
