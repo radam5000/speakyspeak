@@ -2587,7 +2587,7 @@ func kokoroDaemonRender(text: String, voice: String, out: URL) -> Bool {
 // Matches the hook's convert_wav: loudness-normalize to -16 LUFS while encoding
 // AAC (Kokoro renders ~12dB quiet); afconvert (no gain stage) if ffmpeg is missing.
 func convertWavToM4a(_ wav: URL, out: URL) -> Bool {
-    let ffmpeg = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+    let ffmpeg = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"]
         .first { FileManager.default.isExecutableFile(atPath: $0) }
     let p = Process()
     if let f = ffmpeg {
@@ -2724,7 +2724,7 @@ final class VoicePreviewer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         let out = raw.deletingPathExtension().appendingPathExtension("norm.wav")
         let fm = FileManager.default
         if fm.fileExists(atPath: out.path) { return out }
-        guard let ffmpeg = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+        guard let ffmpeg = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"]
             .first(where: { fm.isExecutableFile(atPath: $0) }) else { return raw }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: ffmpeg)
