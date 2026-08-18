@@ -2672,24 +2672,44 @@ final class VoicePreviewer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         runSay(s, voice: voice, text: sample(name))
     }
 
+    // Rendered to a file and played through AVAudioPlayer rather than spoken
+    // live: live `say` output can't be volume-scaled, so it ignored the app's
+    // Volume slider while every other sound honored it (2026-08-18 loudness
+    // audit). No loudnorm here on purpose — say's native level is the -16
+    // reference the hook normalizes Kokoro TO, and the hook plays say renders
+    // unnormalized too.
     private func runSay(_ s: SettingsStore, voice: String, text: String) {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        var args: [String] = []
-        if !voice.isEmpty { args += ["-v", voice] }
-        if !s.sayRate.isEmpty { args += ["-r", s.sayRate] }
-        args.append(text)
-        p.arguments = args
-        p.terminationHandler = { [weak self] proc in
+        state = .rendering
+        generation += 1
+        let gen = generation
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let fm = FileManager.default
+            try? fm.createDirectory(at: previewDir, withIntermediateDirectories: true)
+            let out = previewDir.appendingPathComponent("say-render.aiff")
+            try? fm.removeItem(at: out)
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+            var args: [String] = []
+            if !voice.isEmpty { args += ["-v", voice] }
+            if !s.sayRate.isEmpty { args += ["-r", s.sayRate] }
+            args += ["-o", out.path, text]
+            p.arguments = args
+            try? p.run()
+            p.waitUntilExit()
             DispatchQueue.main.async {
-                guard let self, proc === self.sayProcess else { return }
-                self.sayProcess = nil
-                self.state = .idle
+                guard gen == self.generation, self.state == .rendering else { return }
+                guard p.terminationStatus == 0, let ap = try? AVAudioPlayer(contentsOf: out) else {
+                    dlog("voice preview: say render failed")
+                    self.state = .idle
+                    return
+                }
+                ap.delegate = self
+                ap.volume = Float(Deck.shared.volume)
+                ap.play()
+                self.player = ap
+                self.state = .playing
             }
         }
-        guard (try? p.run()) != nil else { dlog("voice preview: say failed to launch"); return }
-        sayProcess = p
-        state = .playing
     }
 
     // The hook loudness-normalizes every queued reply to -16 LUFS (Kokoro's
