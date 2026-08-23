@@ -59,6 +59,19 @@ run_hook() {  # $1 = transcript, $2 = speech root
     | env HOME="$THOME" PATH="$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$2" bash "$HOOK"
 }
 
+run_post() {  # $1 = transcript, $2 = speech root, $3 = speak-when mode
+  printf '%s' "$3" > "$THOME/.claude/speak-when"
+  printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s","hook_event_name":"PostToolUse","tool_name":"Bash"}' \
+    "$1" "$SID_FULL" "$PROJ" \
+    | env HOME="$THOME" PATH="$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$2" bash "$HOOK"
+  rm -f "$THOME/.claude/speak-when"
+}
+
+qtext() {  # $1 = speech root -> the text of the single queued manifest, or ""
+  local j; j=$(ls "$1/queue/"*.json 2>/dev/null | head -1)
+  [ -n "$j" ] && jq -r .text "$j"
+}
+
 now() { date -u +%Y-%m-%dT%H:%M:%S.000Z; }
 
 # jsonl builders
@@ -134,6 +147,78 @@ else bad "manifest is missing contract fields"; fi
 if [ -n "${J2:-}" ] && [ "$(jq -r .project "$J2")" = "myproject" ]; then
   ok "project field derives from cwd"
 else bad "project field wrong"; fi
+
+# --- test 5: mid-run speech is OFF by default ------------------------------
+# The PostToolUse registration ships wired but inert: with no speak-when file
+# (or "end"), a tool call must produce absolute silence. This is what makes the
+# feature safe to install for everyone.
+echo "test 5: PostToolUse stays silent in the default \"end\" mode"
+R5="$TDIR/root5"; T5="$TDIR/t5.jsonl"
+{ e_user u1 "do the thing"
+  e_text a1 "This preamble is comfortably longer than the fifteen word floor, so only the mode can be keeping it quiet."
+  e_tooluse a2 ""
+  e_toolresult u2
+} > "$T5"
+run_post "$T5" "$R5" "end"
+if ls "$R5/queue/"*.m4a >/dev/null 2>&1; then bad "spoke mid-run while mode was end"
+else ok "silent in end mode"; fi
+[ -f "$R5/.seen-$SID" ] && bad "end mode moved the .seen mark" || ok "left .seen untouched"
+
+# --- test 6: mode=all speaks a mid-run entry -------------------------------
+echo "test 6: PostToolUse in \"all\" mode speaks the mid-run entry"
+R6="$TDIR/root6"
+run_post "$T5" "$R6" "all"
+if [ "$(qtext "$R6")" = "This preamble is comfortably longer than the fifteen word floor, so only the mode can be keeping it quiet." ]; then
+  ok "spoke the mid-run entry"
+else bad "text is '$(qtext "$R6")'"; fi
+
+# --- test 7: THE GUARD — mid-run must never swallow the final reply --------
+# This hook runs async, so the turn's real answer can land in the transcript
+# while it is still rendering. If the mid-run path spoke or .seen-marked that
+# answer, Stop would skip it and the reply would never be read aloud at all.
+# Only text already followed by a tool call is eligible.
+echo "test 7: a final reply present in the transcript is not taken by the mid-run path"
+R7="$TDIR/root7"; T7="$TDIR/t7.jsonl"
+{ cat "$T5"
+  e_text a3 "THE FINAL ANSWER."
+} > "$T7"
+run_post "$T7" "$R7" "all"
+GOT7=$(qtext "$R7")
+case $GOT7 in
+  *"THE FINAL ANSWER"*) bad "mid-run path spoke the final reply — Stop would now skip it" ;;
+  "") bad "mid-run path went silent; expected the eligible preamble" ;;
+  *) ok "spoke only the pre-tool-call text" ;;
+esac
+[ "$(cat "$R7/.seen-$SID" 2>/dev/null)" = "a3" ] \
+  && bad ".seen was advanced onto the final reply" || ok "left the final reply unmarked"
+
+# --- test 8: Stop after a mid-run speak reads the remainder, once ----------
+echo "test 8: Stop after a mid-run speak reads only what is left"
+run_hook "$T7" "$R7"
+N8=$(ls "$R7/queue/"*.json 2>/dev/null | wc -l | tr -d " ")
+LAST8=$(ls -t "$R7/queue/"*.json 2>/dev/null | head -1)
+if [ "$N8" = "2" ] && [ "$(jq -r .text "$LAST8")" = "THE FINAL ANSWER." ]; then
+  ok "Stop spoke the final reply and nothing else"
+else bad "expected 2 queued items ending in the final reply; got $N8, last='$(jq -r .text "$LAST8" 2>/dev/null)'"; fi
+
+# --- test 9: substantial mode drops short filler, keeps the real line ------
+echo "test 9: \"substantial\" mode skips the short connective lines"
+R9="$TDIR/root9"; T9="$TDIR/t9.jsonl"
+{ e_user u1 "do the thing"
+  e_text a1 "Still there."
+  e_tooluse a2 ""
+  e_toolresult u2
+  e_text a3 "Double-press the power button a few times now, because the capture is running for about thirty seconds."
+  e_tooluse a4 ""
+  e_toolresult u3
+} > "$T9"
+run_post "$T9" "$R9" "substantial"
+GOT9=$(qtext "$R9")
+case $GOT9 in
+  *"Still there"*) bad "short filler was spoken: '$GOT9'" ;;
+  *"Double-press the power button"*) ok "kept the instruction, dropped the filler" ;;
+  *) bad "text is '$GOT9'" ;;
+esac
 
 echo
 echo "hook tests: $PASS passed, $FAIL failed"

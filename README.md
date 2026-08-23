@@ -63,8 +63,8 @@ App source and hook sources both live in this repo. Run `./install.sh` to build 
 - **Skip = stop this reply.** The skip button (now-playing transport and the mini HUD) stops whatever's speaking and plays the next queued reply, or goes quiet if nothing's queued — unlike Mute/Pause, it doesn't shut the whole pipeline down, it just drops the one track you don't want to hear. Works even with an empty queue.
 - **Mini HUD** — whenever a reply starts speaking, a tiny floating panel drops under the menu-bar icon with the title and a full transport: **back-track / back-10 / play-pause / forward-10 / skip** (the two track buttons pinned to the far edges), so one click controls what you're hearing without opening the full deck. "Back-track" (far left) restarts the current reply, then steps to the previously-played one if you're already near the start (music-player style); "skip" (far right) stops the current one and moves on. A **glowing progress bar along the bottom** shows how far into the reply you are. It bridges the gap between queued replies and fades out a moment after things go quiet. **Drag it anywhere** — grab the background and move it; the spot sticks across launches instead of snapping back under the icon. When a reply starts — or you skip forward / step back / restart — it **flashes bright glowing white** for a moment so it's easy to spot wherever you've parked it. Its surface is **Liquid Glass** on macOS 26+ (Settings ▸ Appearance can switch it to the classic frosted card if the glass contrast is hard to read over some backgrounds). An **X dismisses it for the current reply only** — it pops back up on its own when the next reply starts. Non-activating, so it never steals focus or interrupts typing. Left-clicking the icon still opens the full deck.
 - **Global hotkey — ⌃⌥⌘Space** ("quiet now") — system-wide; stops the current reply (skips to the next if queued, else silent). Registered via Carbon, so no Accessibility/Input-Monitoring permission prompt. No-op when nothing's playing (never cold-starts audio).
-- **Rows** — the row itself is inert; the left icon is pure status (orange dot = queued, gray check = played). Actions are on the right: hover for play-now / remove, chevrons reorder the queue.
-- **Bottom-right footer** — sweep icon clears all played replies; trash icon deletes everything, played and queued. Every icon has a hover tooltip.
+- **Rows** — the row itself is inert; the left icon is pure status (bright orange dot = plays next, dim orange dot = queued, spark = speaking now, gray check = played). Actions are on the right: hover for play-now / remove. Queued rows sit under a **session header** (title, reply count, time span) with its own hover actions: **Play this session next** and **Remove this session's queued replies**.
+- **Toolbar row** — sits on the "Up next" line, above the list: ⇅ sort menu (grouping and play order, see [Ordering rules](#ordering-rules)), sweep icon clears all played replies, trash icon deletes everything (played and queued), gear opens Settings. **Hovering any of them replaces the "Up next" label with what that control does**, so there's no separate hint line. An available update still appears at the bottom left.
 - **Settings** — gear in the footer, or right-click the icon → Settings…. A native grouped window for the knobs that used to require editing dotfiles by hand (engine + voice), plus playback/appearance, plus **About & support** (version, updates, and the two ways to send a report). See below.
 - **Updates** — when a new version is out, the menu-bar icon grows a ↑ next to it and the deck's footer shows "Update X available"; both point at **Settings ▸ About & support**, where the "Update to X…" button pulls, rebuilds, and relaunches. The same section has a "Check for updates" button when you're already current (it also checks once a day on its own).
 - **Quit** — right-click the menu-bar icon → Quit (also right-click anywhere on the panel itself).
@@ -77,6 +77,7 @@ App source and hook sources both live in this repo. Run `./install.sh` to build 
 The settings window is the GUI front for the same `~/.claude` dotfiles the Stop hook reads — it writes them, so there's one source of truth and shell edits still work.
 
 - **Speak Claude's replies** — master switch; off creates `~/.claude/speak-off` (stops *rendering* entirely). Distinct from Mute, which keeps rendering/queueing but doesn't play aloud.
+- **Read replies** — *when* speech happens. **When Claude finishes** (the default) reads a reply only once Claude stops and is waiting for you — the original behaviour. The other two read a long agentic run **as it happens**, which matters when Claude asks you to do something ("press the button now") twenty minutes into a run that hasn't ended yet: **As it works, skipping short lines** reads each step but stays quiet for short connecting lines like "Let me check that." (threshold: `~/.claude/speak-min-words`, default 15), and **As it works, every line** reads all of them. → `~/.claude/speak-when` (`end` | `substantial` | `all`; absent = `end`). The mid-run modes need the `PostToolUse` hook registered — see [INSTALL.md](INSTALL.md) step 5. It is the same script, and in the default mode it exits in ~30ms without doing anything.
 - **Voice** — Kokoro voices (curated English set; → `speak-voice-kokoro`) when Kokoro is installed, else the installed `say` voices (enumerated from `say -v '?'`; → `speak-voice`, "Automatic" = best probed) with a words-per-minute **Rate** (→ `speak-rate`). No Engine row in the UI — `~/.claude/speak-engine` still overrides from the shell. The ▶ beside the picker previews the selected voice ("Hi, I'm …"); switching voices mid-preview hops to the new one. Kokoro samples render via the warm daemon (cold CLI fallback — which also fetches a voice missing from the offline HF cache) and cache in `/tmp/claude-speech/preview/`.
 - **Voice change re-speaks the queue** — closing Settings with a different Kokoro voice re-renders all *queued* (unplayed) items in it, warm-daemon-only (daemon down = old audio kept), atomic swap per file. Needs the manifest's `text` field, so items queued before 2026-07-20 keep their voice.
 - **Playback** — speed, volume, mute (app prefs, same as the deck controls).
@@ -84,9 +85,22 @@ The settings window is the GUI front for the same `~/.claude` dotfiles the Stop 
 
 ## Ordering rules
 
-- **Newest plays next.** A fresh arrival slots in at the top of Up Next, right under whatever is speaking; stale backlog sinks to the bottom.
+By default the queue is a flat list, newest first. Two settings in the sort menu (the ⇅ button on the "Up next" line) change that, and they persist:
+
+| Setting | Choices | What it does |
+| --- | --- | --- |
+| **Group by** | None · Session | Whether replies are grouped into one run per Claude Code session. |
+| **Order by** | Newest first · Oldest first | The direction for everything: the replies inside a group, and the groups themselves. |
+
+Sorting the list **is** sorting the queue: the deck reads it from the top down.
+
+**Why grouping helps.** Several Claude Code sessions talk at once, and each one's replies are a sequence: agent 1 lands, then agent 2, and reply 8 only makes sense after reply 1. Set Group by to Session and Order by to Oldest first and you hear each session's story in the order it happened, one session at a time, instead of a backwards interleaving of all of them.
+
+- **A new arrival extends its own group's run** rather than jumping the queue, so an unrelated session is never spliced into the middle of a story.
+- **Overrides:** "Play now" on a row plays that one reply immediately; "Play this session next" on a group header moves that whole run to the front once the current reply finishes.
+- The now-playing card and the mini HUD show **"2 of 6"** — where this reply sits in its group's run, so you know how much of the story is left. It's hidden when nothing is grouped.
 - A reply paused mid-way is never preempted by autoplay; new arrivals wait.
-- On launch, a restored backlog stays silent — only a reply created in the last 2 minutes autoplays (the hook may have cold-started the app for it).
+- On launch, a restored backlog stays silent — only when a reply arrived in the last 2 minutes does playback start, and it then starts at the head of the play order (that live session's oldest unheard reply), because the earlier replies are the context that makes the fresh one make sense.
 
 ## Voice engine
 

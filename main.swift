@@ -1,5 +1,7 @@
 // SpeakySpeak — one tiny floating panel that queues and plays Claude Code's
-// spoken replies, one at a time, in arrival order.
+// spoken replies, one at a time. Each session's replies play oldest-first as
+// one run, so a session's story is heard in order; the liveliest session's
+// run plays first. See Deck.resort() for the whole ordering rule.
 //
 // The speak-reply.sh Stop hook renders each reply to audio and drops
 //   /tmp/claude-speech/queue/<epoch>-<sid>.m4a   (audio, written first)
@@ -62,6 +64,30 @@ struct Theme {
                     secondary: Color(hex: 0x87827A), track: Color.black.opacity(0.09),
                     hover: Color.black.opacity(0.04), swirlIntensity: 0.26)
     }
+}
+
+// MARK: - Sort options
+//
+// These three are the user's control over PLAY ORDER, not just how the list
+// looks: the deck speaks the list top to bottom, so sorting the list is
+// sorting the queue. Set from the footer's sort menu, persisted in
+// UserDefaults, applied by Deck.resort().
+
+enum GroupBy: String, CaseIterable, Identifiable {
+    case none, session
+    var id: String { rawValue }
+    var label: String { self == .none ? "None" : "Session" }
+}
+
+// One direction for everything: it orders the replies inside a group AND the
+// groups themselves (by their newest reply going one way, their oldest going
+// the other). Adam cut a separate group-order control on 2026-08-23 as too
+// complicated, and he was right — two order controls made you reason about
+// an interaction to predict what plays next.
+enum ReplyOrder: String, CaseIterable, Identifiable {
+    case newest, oldest
+    var id: String { rawValue }
+    var label: String { self == .oldest ? "Oldest first" : "Newest first" }
 }
 
 // MARK: - Model
@@ -142,6 +168,12 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if UserDefaults.standard.object(forKey: "volume") != nil {
             volume = min(max(UserDefaults.standard.double(forKey: "volume"), 0), 1)
         }
+        // sort choices persist; the didSet resort() they each fire is a no-op
+        // here because items is still empty (the first rescan does the sorting)
+        if let g = UserDefaults.standard.string(forKey: "groupBy"),
+           let v = GroupBy(rawValue: g) { groupBy = v }
+        if let o = UserDefaults.standard.string(forKey: "replyOrder"),
+           let v = ReplyOrder(rawValue: o) { replyOrder = v }
         enabled = !FileManager.default.fileExists(atPath: speakOffURL.path)
         initDone = true
     }
@@ -245,20 +277,14 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
             if fm.fileExists(atPath: queueDir.appendingPathComponent(id + ".done").path) {
                 item.state = .done
             }
-            // newest reply plays next: a fresh arrival slots in at the top
-            // of Up Next (right under whatever is speaking) and stale
-            // backlog sinks. (ids start with the stop epoch, so descending
-            // id = newest first; a fast-rendering reply still can't jump
-            // an even newer one.) done items and manual moves are left alone.
-            if let at = items.firstIndex(where: { $0.state == .queued && $0.id < item.id }) {
-                items.insert(item, at: at)
-            } else {
-                items.append(item)
-            }
+            // position is decided by resort() below, not here — a new arrival
+            // extends its own session's run rather than jumping the queue
+            items.append(item)
             dlog("queued \(id)")
             added = true
         }
         if added {
+            resort()
             // No window is forced forward on arrival — the menu-bar icon's
             // badge and pulse signal the new reply instead.
             if !enabled {
@@ -266,10 +292,14 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
             } else if initial {
                 // relaunching must not blast a stale backlog — on the first
                 // scan, only a reply that just arrived (the hook may have
-                // cold-started us to play it) starts playback by itself
+                // cold-started us to play it) starts playback by itself.
+                // What then PLAYS is the head of the play order, i.e. that
+                // live session's oldest unheard reply, because the earlier
+                // ones are the context that makes the fresh one make sense.
                 if !muted, !isPlaying,
-                   let fresh = items.first(where: { $0.state == .queued && Date().timeIntervalSince($0.created) < 120 }) {
-                    autoplayGated(fresh)   // cold-start autoplay also yields to the peer
+                   items.contains(where: { $0.state == .queued && Date().timeIntervalSince($0.created) < 120 }),
+                   let head = items.first(where: { $0.state == .queued }) {
+                    autoplayGated(head)   // cold-start autoplay also yields to the peer
                 } else {
                     dlog("initial scan: \(items.count) item(s) restored, autoplay held")
                 }
@@ -371,6 +401,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         player = p
         currentID = item.id
         setState(item.id, .playing)
+        resort()   // the "current session finishes its run" pin just moved
         duration = p.duration
         progress = 0
         p.play()
@@ -512,14 +543,136 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if !playPrevious(), currentID != nil { seek(to: 0); triggerFlash() }
     }
 
-    // Swap a queued item with its neighbor in play order (delta -1 = earlier, +1 = later).
-    func moveQueued(_ item: SpeechItem, by delta: Int) {
-        let q = items.enumerated().filter { $0.element.state == .queued }
-        guard let pos = q.firstIndex(where: { $0.element.id == item.id }) else { return }
-        let target = pos + delta
-        guard target >= 0, target < q.count else { return }
-        items.swapAt(q[pos].offset, q[target].offset)
-        dlog("moved \(item.id) \(delta > 0 ? "later" : "earlier")")
+    // MARK: - Play order (session runs)
+    //
+    // Several Claude Code sessions talk at once, and each one's replies are a
+    // SEQUENCE: agent 1 lands, then agent 2, and reply 8 only makes sense after
+    // reply 1. So `items` is kept sorted into per-session blocks — chronological
+    // inside a block, liveliest block first — and physical order IS play order,
+    // which is why every consumer can keep doing `items.first { $0.state == .queued }`.
+    //
+    // Block order, first match wins:
+    //   1. a session the user tapped "Play this session next" on (newest tap first)
+    //   2. the session of the reply currently playing (its run finishes intact)
+    //   3. everything else by its newest queued arrival, newest first
+    //
+    // Rule 3 is where e92f1b2's "a fresh arrival must not sit behind stale
+    // backlog" survives: freshness now picks WHICH SESSION plays, chronology
+    // orders within it. What's knowingly given up is a fresh single reply
+    // preempting the playing session mid-story — that was the bug, wearing
+    // its other face. "Play now" on a row is the escape hatch.
+    //
+    // All three axes are user-settable from the footer's sort menu and persist.
+    // Never sort `items` by hand anywhere else; call resort().
+    @Published var groupBy: GroupBy = .none {
+        didSet { UserDefaults.standard.set(groupBy.rawValue, forKey: "groupBy"); resort() }
+    }
+    @Published var replyOrder: ReplyOrder = .newest {
+        didSet { UserDefaults.standard.set(replyOrder.rawValue, forKey: "replyOrder"); resort() }
+    }
+
+    private var groupBoost: [String: Date] = [:]   // "Play this session next" taps
+
+    func groupKey(_ item: SpeechItem) -> String {
+        groupBy == .session ? item.sessionId : ""
+    }
+
+    func groupTitle(_ item: SpeechItem) -> String { item.title }
+
+    func resort() {
+        let gb = groupBy, ro = replyOrder
+        let curKey = current.map { groupKey($0) }
+        // a boost dies with its group's last queued reply (and when a mode
+        // change makes its key meaningless, which is the same test)
+        groupBoost = groupBoost.filter { key, _ in
+            items.contains { groupKey($0) == key && $0.state == .queued } }
+        // Per-group span is computed UP FRONT, and the sort runs on a local
+        // copy. The comparator must never read self.items: sort() holds
+        // exclusive access to the array, so a read from inside the closure is
+        // a "Simultaneous accesses" trap that kills the app on first rescan.
+        // (Caught 2026-08-23 by running the comparator against the real queue;
+        // it compiles fine and verify.sh passes, so only a run finds it.)
+        // Live and played are spanned separately so each section's groups sort
+        // by their own contents.
+        var liveNewest: [String: Date] = [:], liveOldest: [String: Date] = [:]
+        var doneNewest: [String: Date] = [:], doneOldest: [String: Date] = [:]
+        var keys: [String: String] = [:]     // item id -> group key
+        var titles: [String: String] = [:]   // group key -> display title
+        for item in items {
+            let k = groupKey(item)
+            keys[item.id] = k
+            if titles[k] == nil { titles[k] = groupTitle(item) }
+            if item.state == .done {
+                doneNewest[k] = max(doneNewest[k] ?? .distantPast, item.created)
+                doneOldest[k] = min(doneOldest[k] ?? .distantFuture, item.created)
+            } else {
+                liveNewest[k] = max(liveNewest[k] ?? .distantPast, item.created)
+                liveOldest[k] = min(liveOldest[k] ?? .distantFuture, item.created)
+            }
+        }
+        let boost = groupBoost
+        var sorted = items
+        // every branch tie-breaks, so this is a total order (sort() isn't stable)
+        sorted.sort { a, b in
+            let ad = a.state == .done, bd = b.state == .done
+            if ad != bd { return bd }                       // live before played
+            let ak = keys[a.id] ?? "", bk = keys[b.id] ?? ""
+            if gb != .none, ak != bk {
+                // boost and the "current group finishes its run" pin apply to
+                // the live section only — the played list is a history, not a queue
+                if !ad {
+                    let aBoost = boost[ak], bBoost = boost[bk]
+                    if (aBoost != nil) != (bBoost != nil) { return aBoost != nil }
+                    if let x = aBoost, let y = bBoost, x != y { return x > y }
+                    let aCur = ak == curKey, bCur = bk == curKey
+                    if aCur != bCur { return aCur }
+                }
+                // groups follow the same direction as the replies: newest
+                // first compares each group's newest reply, oldest first
+                // compares each group's oldest, so the whole list reads one way
+                if ro == .newest {
+                    let aA = (ad ? doneNewest[ak] : liveNewest[ak]) ?? .distantPast
+                    let bA = (ad ? doneNewest[bk] : liveNewest[bk]) ?? .distantPast
+                    if aA != bA { return aA > bA }
+                } else {
+                    let aA = (ad ? doneOldest[ak] : liveOldest[ak]) ?? .distantFuture
+                    let bA = (ad ? doneOldest[bk] : liveOldest[bk]) ?? .distantFuture
+                    if aA != bA { return aA < bA }
+                }
+                return ak < bk
+            }
+            if a.created != b.created {
+                return ro == .oldest ? a.created < b.created : a.created > b.created
+            }
+            return ro == .oldest ? a.id < b.id : a.id > b.id
+        }
+        guard sorted.map(\.id) != items.map(\.id) else { return }   // no needless publish
+        items = sorted
+    }
+
+    // Ordering intent only — like remove(), this never starts audio.
+    func playGroupNext(_ key: String) {
+        groupBoost[key] = Date()
+        resort()
+        dlog("group \(key) boosted to play next")
+    }
+
+    func removeQueued(groupKey key: String) {
+        let victims = items.filter { groupKey($0) == key && $0.state == .queued }
+        guard !victims.isEmpty else { return }
+        dlog("removing \(victims.count) queued item(s) from group \(key)")
+        for item in victims { remove(item) }   // a speaking reply is never touched
+    }
+
+    // "2 of 6" — where this reply sits in its group's unplayed run. Meaningless
+    // when nothing is grouped, so it reports nothing there.
+    func runPosition(of item: SpeechItem) -> (index: Int, count: Int)? {
+        guard groupBy != .none else { return nil }
+        let key = groupKey(item)
+        let run = items.filter { groupKey($0) == key && $0.state != .done }
+                       .sorted { $0.created == $1.created ? $0.id < $1.id : $0.created < $1.created }
+        guard run.count > 1, let i = run.firstIndex(where: { $0.id == item.id }) else { return nil }
+        return (i + 1, run.count)
     }
 
     private let rateSteps: [Double] = [1.0, 1.25, 1.5, 2.0, 0.8]
@@ -973,10 +1126,11 @@ struct DeckView: View {
         VStack(spacing: 10) {
             header(theme)
             nowPlaying(theme)
+            toolbar(theme)
             if !deck.items.isEmpty {
                 list(theme)
             }
-            footer(theme)
+            if updater.availableVersion != nil { footer(theme) }
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 12)
@@ -1021,19 +1175,78 @@ struct DeckView: View {
         }
     }
 
-    private func footer(_ theme: Theme) -> some View {
+    // The row above the list: what section you're looking at on the left, the
+    // deck's controls on the right. Hovering any control replaces the label
+    // with what that control does, so the popover needs no separate hint line.
+    private var listLabel: String {
+        let live = deck.items.filter { $0.state != .done }.count
+        let played = deck.items.count - live
+        if live > 0 { return "UP NEXT · \(live)" }
+        if played > 0 { return "PLAYED · \(played)" }
+        return ""
+    }
+
+    private func toolbar(_ theme: Theme) -> some View {
         let hasDone = deck.items.contains { $0.state == .done }
-        return HStack(spacing: 12) {
-            // Update cue lives bottom-left (Adam's expected spot). It sits
-            // BEFORE the hint text so hovering other controls never hides it —
-            // and it must not use hoverHint itself (hint + conditional slot
-            // would flicker). Plain .help tooltip only.
-            //
-            // It opens Settings rather than updating on the spot: since
-            // 2026-08-17 the update button lives in Settings ▸ About & support,
-            // so there is exactly one place that starts an update. Sitting
-            // inside the existing footer row also means no vertical layout
-            // shift when an update appears or goes away.
+        return HStack(spacing: 2) {
+            if deck.hint.isEmpty {
+                Text(listLabel)
+                    .font(.system(size: 9, weight: .bold))
+                    .kerning(0.8)
+                    .foregroundStyle(theme.secondary)
+                    .lineLimit(1)
+            } else {
+                Text(deck.hint)
+                    .font(.system(size: 10, design: .serif).italic())
+                    .foregroundStyle(theme.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            // Adam's order, left to right: sort, clear played, delete all, settings
+            sortMenu(theme)
+            toolbarButton("wind", theme, disabled: !hasDone,
+                          help: "Clear played — sweep away all played replies",
+                          label: "Clear played", hint: "Clear played") {
+                deck.clearDone()
+            }
+            toolbarButton("trash", theme, disabled: deck.items.isEmpty,
+                          help: "Delete all — remove every reply, played and queued",
+                          label: "Delete all", hint: "Delete all — played and queued") {
+                deck.clearAll()
+            }
+            toolbarButton("gearshape", theme, disabled: false,
+                          help: "Settings — engine, voice, playback",
+                          label: "Settings", hint: "Settings") {
+                SettingsWindowController.shared.show()
+            }
+        }
+        .frame(height: 20)
+        .padding(.horizontal, 7)
+    }
+
+    private func toolbarButton(_ symbol: String, _ theme: Theme, disabled: Bool,
+                               help: String, label: String, hint: String,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(theme.secondary)
+                .frame(width: 24, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(label)
+        .hoverHint(hint)
+        .disabled(disabled)
+        .opacity(disabled ? 0.35 : 1)
+    }
+
+    // Only the update cue is left down here, and the whole row is dropped when
+    // there is no update — the controls moved up to the toolbar row (Adam,
+    // 2026-08-23). Bottom-left is still where he looks for the update.
+    private func footer(_ theme: Theme) -> some View {
+        HStack(spacing: 12) {
             if let v = updater.availableVersion {
                 let busy: Bool = {
                     switch updater.phase {
@@ -1054,47 +1267,36 @@ struct DeckView: View {
                            : "Update \(v) is available. Click to open Settings and install it.")
                 .accessibilityLabel(busy ? "Update in progress" : "Update \(v) available, open Settings")
             }
-            Text(deck.hint)
-                .font(.system(size: 10, design: .serif).italic())
-                .foregroundStyle(theme.secondary)
-                .lineLimit(1)
             Spacer()
-            Button(action: { SettingsWindowController.shared.show() }) {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(theme.secondary)
-                    .frame(width: 24, height: 20)
-            }
-            .buttonStyle(.plain)
-            .help("Settings — engine, voice, playback")
-            .accessibilityLabel("Settings")
-            .hoverHint("Settings")
-            Button(action: { deck.clearDone() }) {
-                Image(systemName: "wind")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(theme.secondary)
-                    .frame(width: 24, height: 20)
-            }
-            .buttonStyle(.plain)
-            .help("Clear played — sweep away all played replies")
-            .accessibilityLabel("Clear played")
-            .hoverHint("Clear played")
-            .disabled(!hasDone)
-            .opacity(hasDone ? 1 : 0.35)
-            Button(action: { deck.clearAll() }) {
-                Image(systemName: "trash")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(theme.secondary)
-                    .frame(width: 24, height: 20)
-            }
-            .buttonStyle(.plain)
-            .help("Delete all — remove every reply, played and queued")
-            .accessibilityLabel("Delete all")
-            .hoverHint("Delete all — played and queued")
-            .disabled(deck.items.isEmpty)
-            .opacity(deck.items.isEmpty ? 0.35 : 1)
         }
         .frame(height: 18)
+    }
+
+    // Sorting the list IS sorting the queue — the deck speaks it top to bottom —
+    // so the menu says so rather than leaving the user to find out by listening.
+    private func sortMenu(_ theme: Theme) -> some View {
+        Menu {
+            Picker("Group by", selection: $deck.groupBy) {
+                ForEach(GroupBy.allCases) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.inline)
+            Picker("Order by", selection: $deck.replyOrder) {
+                ForEach(ReplyOrder.allCases) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.inline)
+            Divider()
+            Text("This is the play order too. Replies are read from the top down.")
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(theme.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: 24, height: 20)
+        .help("Sort — group the queue and choose the order it plays in")
+        .accessibilityLabel("Sort the queue")
+        .hoverHint("Sort — grouping and play order")
     }
 
     @ViewBuilder private func nowPlaying(_ theme: Theme) -> some View {
@@ -1114,6 +1316,14 @@ struct DeckView: View {
                         Text(cur.created, style: .time)
                             .font(.system(size: 10).monospacedDigit())
                             .foregroundStyle(theme.secondary)
+                        // where this reply sits in its session's run, so a
+                        // story mid-play says how much of it is left
+                        if let pos = deck.runPosition(of: cur) {
+                            Text("· \(pos.index) of \(pos.count)")
+                                .font(.system(size: 10).monospacedDigit())
+                                .foregroundStyle(theme.secondary)
+                                .accessibilityLabel("Reply \(pos.index) of \(pos.count) from this session")
+                        }
                         Spacer()
                     }
                     Text(cur.preview)
@@ -1195,30 +1405,55 @@ struct DeckView: View {
     }
 
     private func list(_ theme: Theme) -> some View {
-        // Up Next in true play order (top = next); Played grayed below, newest first
-        let queued = deck.items.filter { $0.state == .queued }
-        let played = deck.items.filter { $0.state == .done }.sorted { $0.created > $1.created }
+        // Up Next in true play order (top = next), grouped into session runs;
+        // Played grayed below, newest first, ungrouped (a graveyard doesn't
+        // need headers). The playing reply shows in place inside its run so
+        // its position in the story is visible.
+        let grouping = deck.groupBy != .none
+        let live = deck.items.filter { $0.state != .done }
+        let played = deck.items.filter { $0.state == .done }
+        let nextUpID = live.first(where: { $0.state == .queued })?.id
         return ScrollView {
             VStack(alignment: .leading, spacing: 2) {
-                if !queued.isEmpty {
-                    sectionHeader("Up Next", count: queued.count, theme)
-                    ForEach(Array(queued.enumerated()), id: \.element.id) { i, item in
-                        DeckRow(item: item, isCurrent: false,
-                                queuePos: i + 1, queueCount: queued.count, theme: theme)
-                    }
+                if !live.isEmpty {
+                    // its "UP NEXT · n" header is the toolbar row above, which
+                    // is also where the icons and the hover hint live
+                    section(live, nextUpID: nextUpID, grouping: grouping,
+                            playable: true, theme: theme)
                 }
                 if !played.isEmpty {
-                    sectionHeader("Played", count: played.count, theme)
-                        .padding(.top, queued.isEmpty ? 0 : 8)
-                    ForEach(played) { item in
-                        DeckRow(item: item, isCurrent: item.id == deck.currentID,
-                                queuePos: nil, queueCount: 0, theme: theme)
+                    if !live.isEmpty {
+                        sectionHeader("Played", count: played.count, theme)
+                            .padding(.top, 8)
                     }
+                    section(played, nextUpID: nil, grouping: grouping,
+                            playable: false, theme: theme)
                 }
             }
             .padding(.top, 2)
         }
         .frame(minHeight: 80, maxHeight: 280)
+    }
+
+    // `playable` = the live section, whose group headers get the reorder and
+    // remove actions; the played list is history and its headers are inert.
+    @ViewBuilder
+    private func section(_ items: [SpeechItem], nextUpID: String?, grouping: Bool,
+                         playable: Bool, theme: Theme) -> some View {
+        if grouping {
+            ForEach(GroupBlock.chunk(items, key: deck.groupKey, title: deck.groupTitle)) { block in
+                GroupHeaderRow(block: block, actions: playable, theme: theme)
+                ForEach(block.items) { item in
+                    DeckRow(item: item, isCurrent: item.id == deck.currentID,
+                            isNextUp: item.id == nextUpID, grouped: true, theme: theme)
+                }
+            }
+        } else {
+            ForEach(items) { item in
+                DeckRow(item: item, isCurrent: item.id == deck.currentID,
+                        isNextUp: item.id == nextUpID, grouped: false, theme: theme)
+            }
+        }
     }
 
     private func sectionHeader(_ title: String, count: Int, _ theme: Theme) -> some View {
@@ -1231,12 +1466,116 @@ struct DeckView: View {
     }
 }
 
+// One group's contiguous run of replies. Blocks are contiguous in Deck.items
+// by construction (see resort()), so chunking consecutive rows on the group
+// key is enough to find them. The key and title come from Deck rather than
+// being read off the item, so a new grouping mode only has to change there.
+struct GroupBlock: Identifiable {
+    let id: String
+    let key: String
+    let title: String
+    let items: [SpeechItem]
+
+    static func chunk(_ rows: [SpeechItem],
+                      key: (SpeechItem) -> String,
+                      title: (SpeechItem) -> String) -> [GroupBlock] {
+        var out: [GroupBlock] = []
+        var run: [SpeechItem] = []
+        var runKey = ""
+        func flush() {
+            guard let head = run.first else { return }
+            out.append(GroupBlock(id: head.id, key: runKey, title: title(head), items: run))
+            run = []
+        }
+        for item in rows {
+            let k = key(item)
+            if !run.isEmpty && k != runKey { flush() }
+            runKey = k
+            run.append(item)
+        }
+        flush()
+        return out
+    }
+
+    // "3:19-3:26", or one time when the run starts and ends in the same minute
+    var timeSpan: String {
+        let times = items.map(\.created).sorted()
+        guard let first = times.first, let last = times.last else { return "" }
+        let a = GroupBlock.clock.string(from: first), b = GroupBlock.clock.string(from: last)
+        return a == b ? a : "\(a)\u{2013}\(b)"
+    }
+
+    var countLabel: String { items.count == 1 ? "1 reply" : "\(items.count) replies" }
+
+    private static let clock: DateFormatter = {
+        let f = DateFormatter()
+        let is24 = (DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current) ?? "")
+            .contains("H")
+        f.dateFormat = is24 ? "HH:mm" : "h:mm"
+        return f
+    }()
+}
+
+struct GroupHeaderRow: View {
+    @ObservedObject var deck = Deck.shared
+    let block: GroupBlock
+    let actions: Bool
+    let theme: Theme
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(block.title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(theme.text)
+                .lineLimit(1)
+            Text("\u{00B7} \(block.countLabel) \u{00B7} \(block.timeSpan)")
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(theme.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            if hover && actions {
+                Button(action: { deck.playGroupNext(block.key) }) {
+                    Image(systemName: "arrow.up.to.line")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                }
+                .buttonStyle(.plain)
+                .help("Play this session next")
+                .hoverHint("Play this session next")
+                .accessibilityLabel("Play \(block.title) next")
+                Button(action: { deck.removeQueued(groupKey: block.key) }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(theme.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Remove this session's queued replies")
+                .hoverHint("Remove this session's queued replies")
+                .accessibilityLabel("Remove queued replies from \(block.title)")
+            }
+        }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 7)
+        .padding(.top, 4)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            hover = inside
+            if !inside, deck.hint.hasPrefix("Play this") || deck.hint.hasPrefix("Remove this") {
+                deck.hint = ""
+            }
+        }
+    }
+}
+
 struct DeckRow: View {
     @ObservedObject var deck = Deck.shared
     let item: SpeechItem
     let isCurrent: Bool
-    let queuePos: Int?
-    let queueCount: Int
+    let isNextUp: Bool
+    // grouped rows sit under a session header that already carries the title,
+    // so they collapse to one line: status, time, preview
+    let grouped: Bool
     let theme: Theme
     @State private var hover = false
 
@@ -1246,24 +1585,34 @@ struct DeckRow: View {
             // (play / remove / reorder) live on the right
             HStack(spacing: 8) {
                 statusIcon.frame(width: 16)
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        Text(item.title)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(theme.text)
-                        Text(item.created, style: .time)
-                            .font(.system(size: 9).monospacedDigit())
-                            .foregroundStyle(theme.secondary)
-                    }
+                if grouped {
+                    Text(item.created, style: .time)
+                        .font(.system(size: 9).monospacedDigit())
+                        .foregroundStyle(theme.secondary)
                     Text(item.preview)
                         .font(.system(size: 10))
                         .foregroundStyle(theme.secondary)
                         .lineLimit(1)
+                } else {
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 6) {
+                            Text(item.title)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(theme.text)
+                            Text(item.created, style: .time)
+                                .font(.system(size: 9).monospacedDigit())
+                                .foregroundStyle(theme.secondary)
+                        }
+                        Text(item.preview)
+                            .font(.system(size: 10))
+                            .foregroundStyle(theme.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 Spacer(minLength: 4)
             }
-            .padding(.vertical, 4)
-            .padding(.leading, 7)
+            .padding(.vertical, grouped ? 2 : 4)
+            .padding(.leading, grouped ? 14 : 7)
 
             if hover {
                 Button(action: { deck.play(item) }) {
@@ -1283,28 +1632,6 @@ struct DeckRow: View {
                 .help("Remove")
                 .hoverHint("Remove")
             }
-            if item.state == .queued {
-                Button(action: { deck.moveQueued(item, by: -1) }) {
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(queuePos == 1 ? theme.secondary.opacity(0.3) : theme.secondary)
-                        .frame(width: 15, height: 15)
-                }
-                .buttonStyle(.plain)
-                .disabled(queuePos == 1)
-                .help("Play earlier")
-                .hoverHint("Play earlier")
-                Button(action: { deck.moveQueued(item, by: 1) }) {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(queuePos == queueCount ? theme.secondary.opacity(0.3) : theme.secondary)
-                        .frame(width: 15, height: 15)
-                }
-                .buttonStyle(.plain)
-                .disabled(queuePos == queueCount)
-                .help("Play later")
-                .hoverHint("Play later")
-            }
         }
         .padding(.trailing, 7)
         .background(
@@ -1314,7 +1641,7 @@ struct DeckRow: View {
             hover = inside
             // the hover buttons vanish with the row highlight, so their
             // hint can be left stranded — clear it on the way out
-            if !inside, ["Play now", "Remove", "Play earlier", "Play later"].contains(deck.hint) {
+            if !inside, ["Play now", "Remove"].contains(deck.hint) {
                 deck.hint = ""
             }
         }
@@ -1327,7 +1654,7 @@ struct DeckRow: View {
             Spark(size: 12, pulse: deck.level)
         case .queued:
             Circle()
-                .fill(queuePos == 1 ? Theme.accent : Theme.accent.opacity(0.45))
+                .fill(isNextUp ? Theme.accent : Theme.accent.opacity(0.45))
                 .frame(width: 7, height: 7)
         case .done:
             Image(systemName: "checkmark")
@@ -2016,6 +2343,13 @@ struct MiniDeckView: View {
                     .font(.system(size: 12, weight: .semibold, design: .serif))
                     .foregroundStyle(glass ? AnyShapeStyle(.primary) : AnyShapeStyle(theme.text))
                     .lineLimit(1)
+                if let cur = deck.current, let pos = deck.runPosition(of: cur) {
+                    Text("· \(pos.index) of \(pos.count)")
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(theme.secondary)
+                        .lineLimit(1)
+                        .accessibilityLabel("Reply \(pos.index) of \(pos.count) from this session")
+                }
                 Spacer(minLength: 0)
                 // no per-reply dismiss when the panel is pinned "always visible"
                 if settings.hudVisibility != .always {
@@ -2219,6 +2553,7 @@ final class MiniHUDController {
     private var userOrigin: CGPoint?
     private var programmaticMove = false   // ignore our own setFrame in windowMoved
     private var moveObserver: NSObjectProtocol?
+    private var screenObserver: NSObjectProtocol?
     // last anchor seen from the refresh loop, so flashAttention() can position
     // the panel when the Deck (which has no status-item reference) triggers it
     private weak var lastAnchor: NSStatusBarButton?
@@ -2257,6 +2592,32 @@ final class MiniHUDController {
             forName: NSWindow.didMoveNotification, object: p, queue: .main) { [weak self] _ in
             self?.windowMoved()
         }
+        // Displays changed (external monitor unplugged, docked, resolution or
+        // arrangement change). position() only runs in show() when the panel
+        // appears from hidden, so in "always visible" mode the frame keeps
+        // coordinates belonging to a screen that no longer exists and the panel
+        // is simply gone — it flickers back during a Mission Control transition
+        // and vanishes again. Re-run position() to clamp it onto a live screen.
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main) { [weak self] _ in
+            self?.rehomeOntoVisibleScreen()
+            // AppKit can post this before the new arrangement has settled;
+            // a second pass a beat later catches the unsettled case.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.rehomeOntoVisibleScreen()
+            }
+        }
+    }
+
+    // Put the panel back on a screen that exists. userOrigin is deliberately
+    // left untouched, so it stays the user's chosen spot: plug the external
+    // display back in and position() restores the panel to it.
+    private func rehomeOntoVisibleScreen() {
+        guard let p = panel, isVisible else { return }
+        let before = p.frame
+        position(p, size: before.size, anchor: lastAnchor)
+        if p.frame != before { p.orderFrontRegardless() }
     }
 
     private func windowMoved() {
@@ -2444,6 +2805,36 @@ enum HUDVisibility: String, CaseIterable, Identifiable {
     var label: String { self == .whileSpeaking ? "Only while speaking" : "Always visible" }
 }
 
+// When speech happens. Until 2026-08-22 the only trigger was the Stop hook, so
+// a long agentic run (tool call, tool call, tool call...) stayed completely
+// silent until it finished - Adam lost three "press the power button now"
+// instructions inside one 20-minute everething run. A PostToolUse hook can
+// speak mid-run; this picks whether it does.
+//
+// `end` is the default and reproduces the old behaviour exactly, so the
+// PostToolUse registration ships wired but inert for everyone who doesn't
+// choose otherwise. Threshold for `substantial` is ~/.claude/speak-min-words
+// (15), deliberately left out of this window rather than becoming a second
+// control that most people would never touch.
+enum SpeakWhen: String, CaseIterable, Identifiable {
+    case end, substantial, all
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .end:         return "When Claude finishes"
+        case .substantial: return "As it works, skipping short lines"
+        case .all:         return "As it works, every line"
+        }
+    }
+    var help: String {
+        switch self {
+        case .end:         return "Nothing is read aloud until Claude stops and is waiting for you."
+        case .substantial: return "Reads each step of a long run as it happens, but stays quiet for short connecting lines like \u{201C}Let me check that.\u{201D}"
+        case .all:         return "Reads every line as it appears, including the short ones."
+        }
+    }
+}
+
 // Writes the same ~/.claude knobs the Stop hook honors, so the settings panel
 // drives rendering without the user editing dotfiles. Re-read from disk each
 // time the window opens (the shell may have changed them out from under us).
@@ -2461,6 +2852,9 @@ final class SettingsStore: ObservableObject {
     @Published var kokoroVoice: String = "bf_lily"{ didSet { guard !loading else { return }; writeOrRemove("speak-voice-kokoro", kokoroVoice) } }
     @Published var sayVoice: String = ""           { didSet { guard !loading else { return }; writeOrRemove("speak-voice", sayVoice) } }
     @Published var sayRate: String = ""            { didSet { guard !loading else { return }; writeOrRemove("speak-rate", sayRate) } }
+    // "end" is the hook's default too, so write nothing for it — an absent file
+    // and the string "end" must stay interchangeable (speak-reply.sh line ~79).
+    @Published var speakWhen: SpeakWhen = .end     { didSet { guard !loading else { return }; writeOrRemove("speak-when", speakWhen == .end ? "" : speakWhen.rawValue) } }
     @Published var menuBarStyle: MenuBarStyle = .sy { didSet { guard !loading else { return }; UserDefaults.standard.set(menuBarStyle.rawValue, forKey: "menuBarStyle") } }
     @Published var hudStyle: HUDStyle = .liquidGlass { didSet { guard !loading else { return }; UserDefaults.standard.set(hudStyle.rawValue, forKey: "hudStyle") } }
     @Published var hudVisibility: HUDVisibility = .whileSpeaking { didSet { guard !loading else { return }; UserDefaults.standard.set(hudVisibility.rawValue, forKey: "hudVisibility") } }
@@ -2501,6 +2895,7 @@ final class SettingsStore: ObservableObject {
         let kv = read("speak-voice-kokoro"); kokoroVoice = kv.isEmpty ? "bf_lily" : kv
         sayVoice = read("speak-voice")
         sayRate = read("speak-rate")
+        speakWhen = SpeakWhen(rawValue: read("speak-when")) ?? .end
         loading = false
     }
 
@@ -2852,6 +3247,12 @@ struct SettingsView: View {
         Form {
             Section("Speech") {
                 Toggle("Speak Claude's replies", isOn: $settings.enabled)
+                Picker("Read replies", selection: $settings.speakWhen) {
+                    ForEach(SpeakWhen.allCases) { Text($0.label).tag($0) }
+                }
+                Text(settings.speakWhen.help)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 // No Engine row: Kokoro when installed, system voice otherwise
                 // (~/.claude/speak-engine still overrides for the shell-inclined).
                 if settings.usingKokoro {

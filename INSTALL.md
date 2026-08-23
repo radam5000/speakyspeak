@@ -153,17 +153,33 @@ Expected: all four paths exist.
     { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
       "timeout": 600, "async": true }
   ]}],
+  "PostToolUse": [{ "matcher": "*", "hooks": [
+    { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
+      "timeout": 600, "async": true }
+  ]}],
   "SessionEnd": [{ "matcher": "*", "hooks": [
     { "type": "command", "command": "bash ~/.claude/hooks/session-end.sh" }
   ]}]
 }
 ```
 
+The `PostToolUse` entry is what lets SpeakySpeak read a long run aloud **as it
+happens**, instead of staying silent through twenty minutes of tool calls and
+then reading the whole thing at the end. It is the same script; it does nothing
+until the user turns it on in Settings ▸ Speech ▸ "Read replies", and in the
+default setting it exits within milliseconds of being called. Wire it now even
+if the user doesn't want mid-run speech yet — then the setting just works later,
+with no second trip into `settings.json`.
+
 If `~/.claude/settings.json` doesn't exist yet, create it with just:
 ```json
 {
   "hooks": {
     "Stop": [{ "matcher": "*", "hooks": [
+      { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
+        "timeout": 600, "async": true }
+    ]}],
+    "PostToolUse": [{ "matcher": "*", "hooks": [
       { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
         "timeout": 600, "async": true }
     ]}],

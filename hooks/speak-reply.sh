@@ -47,7 +47,43 @@ if [ -z "$ENGINE" ]; then
   if [ -x "$KOKORO_BIN" ]; then ENGINE=kokoro; else ENGINE=say; fi
 fi
 
+# Released on exit by both traps in this script (see the afplay fallback at the
+# bottom, which sets its own EXIT trap and would otherwise replace this one).
+MIDLOCK=""
+cleanup_midlock() { [ -n "$MIDLOCK" ] && rmdir "$MIDLOCK" 2>/dev/null; return 0; }
+
 input=$(cat)
+
+# WHEN to speak. Two entry points share this script and everything below it:
+#
+#   Stop         - the turn is over and Claude is waiting for the user. The
+#                  only behaviour that existed until 2026-08-22.
+#   PostToolUse  - fires mid-turn, after each tool call, so a long agentic run
+#                  is narrated as it happens instead of going silent for twenty
+#                  minutes. (Adam, 2026-08-22: a 20-minute everething debug run
+#                  in which three "press the power button now" instructions were
+#                  never spoken, because the turn simply never ended.)
+#
+# ~/.claude/speak-when picks the mode; absent file = "end" = the old behaviour:
+#   end          - Stop only.
+#   substantial  - Stop + mid-run entries of at least $MINWORDS words, so the
+#                  short connective lines ("Let me check that.") stay quiet.
+#   all          - Stop + every mid-run entry.
+# ~/.claude/speak-min-words overrides the 15-word threshold (no GUI; a tuning
+# escape hatch, deliberately not a second control in the Settings window).
+#
+# Checked here, before any other work, because in "end" mode this script is
+# spawned after every single tool call and must cost as close to nothing as
+# it can.
+event=$(printf '%s' "$input" | jq -r '.hook_event_name // "Stop"')
+WHEN=$(cat "$HOME/.claude/speak-when" 2>/dev/null | tr -d '[:space:]')
+[ -n "$WHEN" ] || WHEN=end
+case $WHEN in end|substantial|all) ;; *) WHEN=end ;; esac
+[ "$event" != "Stop" ] && [ "$WHEN" = end ] && exit 0
+MINWORDS=$(cat "$HOME/.claude/speak-min-words" 2>/dev/null | tr -cd '0-9')
+[ -n "$MINWORDS" ] || MINWORDS=15
+[ "$WHEN" = all ] && MINWORDS=0
+
 t=$(printf '%s' "$input" | jq -r '.transcript_path // empty')
 [ -f "$t" ] || exit 0
 full_sid=$(printf '%s' "$input" | jq -r '.session_id // "session"')
@@ -135,6 +171,58 @@ gather_turn() {
   ' "$t" 2>/dev/null
 }
 
+# Mid-turn counterpart to gather_turn(). Same two boundaries walking backwards
+# (last real user message / last spoken uuid), plus ONE extra guard that
+# gather_turn does not need:
+#
+#   only text entries that are ALREADY FOLLOWED BY A TOOL CALL are eligible.
+#
+# That guard is the whole safety of this path. A turn's real final reply is by
+# definition the text that comes after the last tool call, and this hook runs
+# async - the final reply can land in the transcript while we are still
+# rendering. Without the guard we could mark that reply as spoken, and Stop
+# would then skip it: the actual answer would never be read aloud. With it,
+# the newest thing this path can ever touch is a mid-turn preamble.
+#
+# Returns "<uuid>\t<text>". The uuid is the newest ELIGIBLE entry whether or
+# not the word filter kept it, so filler that was deliberately skipped is not
+# offered again at Stop - "skip" means skip, not "read it later".
+gather_midturn() {
+  jq -rs --arg seen "$last_seen" --argjson minw "$MINWORDS" '
+    def realuser: .type == "user"
+      and ((.isMeta // false) | not)
+      and ((.message.content | type) == "string"
+           or ([.message.content[]? | select(.type == "tool_result")] | length) == 0);
+    def istool: ((.message.content | type) == "array")
+      and (((.type == "assistant")
+            and ([.message.content[] | select(.type == "tool_use")] | length) > 0)
+        or ((.type == "user")
+            and ([.message.content[] | select(.type == "tool_result")] | length) > 0));
+    [.[] | select(((.isSidechain // false) | not)
+                  and (.type == "user" or .type == "assistant"))]
+    | reverse
+    | (map(realuser) | index(true)) as $u
+    | (if $seen == "" then null else (map(.uuid == $seen) | index(true)) end) as $s
+    | ([$u, $s] | map(select(. != null)) | min) as $i
+    | (if $i == null then . else .[0:$i] end)
+    # still newest-first here: drop everything newer than the last tool call
+    | (map(istool) | index(true)) as $k
+    | (if $k == null then [] else .[$k:] end)
+    | reverse
+    | [.[] | select(.type == "assistant" and (.message.content | type) == "array")
+           | { uuid: (.uuid // ""),
+               text: ([.message.content[] | select(.type == "text") | .text] | join("\n")) }]
+    | map(select(.text | test("\\S")))
+    | if length == 0 then "" else
+        (last.uuid) as $mark
+        | ( map(select((.text | [splits("[ \t\n]+")]
+                              | map(select(length > 0)) | length) >= $minw))
+            | map(.text) | join("\n\n") ) as $body
+        | if ($body | test("\\S")) then $mark + "\t" + $body else "" end
+      end
+  ' "$t" 2>/dev/null
+}
+
 # Stop fires a beat BEFORE the turn's final text entry hits the transcript
 # file (observed: hook grabbed the previous reply at 20:42:17 while the real
 # one flushed at 20:42:17.073). So the last text in the file at hook start is
@@ -145,6 +233,33 @@ gather_turn() {
 # Stale backlog can never qualify; if nothing fresh lands in 30s, stay silent.
 SEEN="$SPEECH_ROOT/.seen-$sid"
 last_seen=$(cat "$SEEN" 2>/dev/null || echo "")
+# Mid-turn (PostToolUse). Sets $text and falls through to the render pipeline,
+# or exits. The Stop gate below is deliberately not consulted: at PostToolUse
+# time the newest entry is a tool_use, so extract() would return "" every time.
+if [ "$event" != "Stop" ]; then
+  # Parallel tool calls ("Ran 3 shell commands") fire this hook several times
+  # at once. Without a mutex each copy reads the same .seen and queues the same
+  # words two or three times. Whoever loses the race just exits - nothing is
+  # lost, because .seen only advances when text is actually spoken, so the next
+  # winner picks up everything that accumulated.
+  MIDLOCK="$SPEECH_ROOT/.mid-$sid.lock"
+  if [ -d "$MIDLOCK" ]; then
+    lmt=$(stat -f %m "$MIDLOCK" 2>/dev/null || echo 0)
+    [ $(( $(date +%s) - lmt )) -gt 600 ] && rmdir "$MIDLOCK" 2>/dev/null
+  fi
+  mkdir "$MIDLOCK" 2>/dev/null || exit 0
+  trap cleanup_midlock EXIT
+  out=$(gather_midturn)
+  [ -n "$out" ] || exit 0
+  uuid=${out%%$'\t'*}
+  body=${out#*$'\t'}
+  { [ -z "$body" ] || [ "$body" = "$out" ]; } && exit 0
+  text=$body
+  printf '%s' "$uuid" > "$SEEN"
+  echo "$(date) $sid midturn mode=$WHEN minw=$MINWORDS chars=${#text}" >> "$LOG"
+fi
+
+if [ "$event" = "Stop" ]; then
 start_out=$(extract)
 start_uuid=${start_out%%$'\t'*}
 text=""
@@ -191,6 +306,7 @@ case $full in
   *"$text") text=$full ;;
   *) echo "--- $(date) $sid gather_turn tail mismatch, speaking last entry only" >> "$LOG" ;;
 esac
+fi
 
 # Turn the raw reply into something pleasant to LISTEN to (not read): drop
 # fenced code blocks, then in one Unicode-aware perl pass rewrite the bits that
@@ -222,7 +338,19 @@ clean=$(printf '%s' "$text" \
 # one-line preview for the deck's list (project + opening words)
 preview=$(printf '%s' "$clean" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ +//' | cut -c1-120)
 
+# The id doubles as the filename, and `date +%s` only has 1-second
+# resolution, so two replies from ONE session inside the same second used to
+# write the same path and the first was silently overwritten — a reply the
+# user never heard, with no error anywhere. That is not hypothetical: the
+# mid-run PostToolUse speak followed by the Stop speak lands about a second
+# apart, which made tests/run-hook-tests.sh test 8 fail ~50% of the time
+# (diagnosed 2026-08-23). Walking the stamp forward keeps the documented
+# <epoch>-<sid> queue contract intact and keeps ids monotonic; `created`
+# moves with it, which is what the deck should show anyway.
 stamp=$(date +%s)
+while [ -e "$QUEUE/${stamp}-${sid}.json" ] || [ -e "$QUEUE/${stamp}-${sid}.m4a" ]; do
+  stamp=$((stamp + 1))
+done
 id="${stamp}-${sid}"
 
 # wake the deck before rendering so it's already watching when the audio
@@ -338,7 +466,7 @@ if [ "$app_ok" != 1 ]; then
     i=$((i + 1))
     [ "$i" -gt 600 ] && exit 0
   done
-  trap 'rmdir "$SPEECH_ROOT/.lock" 2>/dev/null' EXIT
+  trap 'rmdir "$SPEECH_ROOT/.lock" 2>/dev/null; cleanup_midlock' EXIT
   afplay "$QUEUE/$id.m4a"
 fi
 exit 0

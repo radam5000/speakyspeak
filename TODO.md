@@ -1,8 +1,18 @@
 # SpeakySpeak — TODO
 
+## Dash
+
+- VoiceOver audit of the app comes before any launch post
+- Launch prep: cut the GitHub release, and keep building Reddit karma for the week-3 post
+
 ## Inbox
 
+- [ ] ss-loop-can-check-site · the feedback loop cannot check the live site, so it can only verify a reporter's claim about speakyspeak.com against the repo source. Came up 2026-08-20 (a spam "your Install button is broken" claim; checked and false). Fix if you want it: add `"WebFetch(domain:speakyspeak.com)"` to CLAUDE_ALLOWED_TOOLS in scripts/loop/daily-feedback.sh:204. Read-only, one domain. Needs your OK (from loop, 2026-08-20)
+- [ ] ss-review-channels · set up where reputation lives: AlternativeTo listing + Homebrew cask; researched in a root Q&A session 2026-08-18, Adam chose "file, decide later" (from session, 2026-08-18)
+
 ## Now
+- [ ] ss-hud-display-change — **needs 2 minutes of your hardware.** The always-visible controller panel vanished for good after unplugging the external display (your voice memo, 8/19 3:16pm); it flashed back during a Mission Control switch and disappeared again. Cause: `position()` only ran when the panel appeared from hidden, so its frame kept coordinates belonging to the disconnected screen. Fixed in `main.swift` (MiniHUDController now observes `NSApplication.didChangeScreenParametersNotification` and re-runs `position()`, twice, 0.4s apart for the unsettled case; `userOrigin` is left alone so re-plugging the display restores your chosen spot). verify.sh all green, but **the fix cannot be proven without a real display disconnect** — plug in the external display, drag the panel onto it, unplug: the panel should reappear on the built-in screen. Then this ships as a release.
+- [ ] ss-midturn-speech — **built 2026-08-22, needs your ears.** New Settings ▸ Speech ▸ "Read replies": *When Claude finishes* (default, unchanged), *As it works, skipping short lines*, *As it works, every line*. Fixes the real complaint: a 20-minute everething run said nothing at all, including three "press the power button now" instructions. Mechanism: a `PostToolUse` hook (wired in your settings.json + INSTALL.md) sharing the `.seen` ledger with Stop, so nothing is spoken twice; `extract()` untouched. 15/15 fixture tests incl. the guard that mid-run speech can never swallow the final reply; replayed against the real everething transcript and it picked out the side-key instruction. **To try it: Settings ▸ Speech ▸ Read replies → "As it works, skipping short lines".** Tune with `~/.claude/speak-min-words` (default 15).
 - [ ] ss-loop-promote-draft — the feedback loop's first trust promotion (triage → draft): earliest ~2026-09-01 after two clean weeks of triage, and ONLY on Adam's explicit go. Check first: classifications right, dedupe real, ack replies ones Adam would have sent, digest reads well. Promote = LOOP_MODE in scripts/loop/*.plist + bootout/copy/bootstrap.
 - [ ] ss-voiceover-audit — VoiceOver audit of the APP (not the site; the site passed 2026-08-17). Approved to happen before any launch post. 12 accessibilityLabel calls exist, no traits/values tested.
 
@@ -15,6 +25,7 @@
 ## Later
 
 ## Done
+- [x] 2026-08-18 (pm) — friend-feedback round shipped: GitHub mark top right on the site; hero padding made height-FLUID (16vh formula, killed the 860px cliff Adam demonstrated with two screenshots); press-play handwriting sharpened (color+alpha unsharp) and 25% smaller; site opens in the waiting state (rainbow lit, "(rainbows = replies waiting)" visible); README rebuilt around Adam's chosen hero composition, clickable to the live demo; 1280x640 social-preview crop handed to Adam (GitHub-UI upload, his 20s task). Ledger: F-0002 shipped, F-0001 declined (Adam), F-0003 parked (Adam per-site).
 - [x] 2026-08-18 — 1.1.0 shipped: the whole update-UX arc from Adam's live testing (visible progress, reliable self-relaunch, uncached update checks, written + spoken confirmation), app-wide loudness/volume consistency audit (Kokoro + say, Homebrew + MacPorts ffmpeg), menu reorder (Mute above Settings, separator), report-button copy. CHANGELOG.md added + linked from the site footer.
 - [x] 2026-08-18 — Air converted to a real end-user install (public-mirror clone, pinned one version back, self-updating); `speakyspeak-air` retired with its decisions preserved in the stub. First real feedback-loop run exercised on Adam's own Air-submitted report — correctly classified as a flow test, diagnostics filed, no false issue/reply.
 - [x] 2026-08-18 — ss-updater-feedback-poll CLOSED by 1.0.10: updater rewritten after a real field failure (silent pkill no-op on the 1.0.8→1.0.9 hop) — marker-file completion, self-terminate + waiter relaunch, live progress/failure UI in Settings, every step logged.

@@ -2,6 +2,16 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.0 (2026-08-23)
+
+**Hear a session's replies in order.** If you run several Claude Code sessions at once, their replies used to arrive interleaved and newest first, so a session's story played backwards with another project's replies spliced into the middle. There is now a sort button on the "Up next" line. Set Group by to Session and Order by to Oldest first, and each session's replies play as one run, in the order they actually happened, one session at a time. A new reply extends its own session's run instead of jumping the queue.
+
+Group headers show the session, how many replies are waiting, and the time span. Hover one to play that whole session next, or clear its queued replies. The now playing card and the floating panel show "2 of 6" so you know how much of a session's story is left. Your choice is remembered. The default is unchanged: a flat list, newest first.
+
+**Controls moved onto the "Up next" line.** Sort, clear played, delete all, and settings now sit on that line instead of at the bottom of the panel. Hovering any of them replaces the label with what it does.
+
+**Fixed: a reply could go missing.** Two replies from the same session inside the same second wrote to the same file, and the first was silently overwritten. Nothing reported an error, you simply never heard it. This was most likely to happen when reading a long run as it works, where a mid-run reply and the final reply can land about a second apart.
+
 ## 1.1.0 (2026-08-18)
 
 A day of polish driven by real user reports, rolled up into a minor release.
