@@ -1137,7 +1137,7 @@ struct VolumeSlider: View {
         .background(NoWindowDrag())
         .help("Volume")
         .accessibilityLabel("Volume")
-        .hoverHint("Volume — drag to adjust")
+        .hoverHint("Volume, drag to adjust")
         .animation(.easeOut(duration: 0.12), value: dragging || hovering)
     }
 }
@@ -1181,8 +1181,10 @@ struct DeckView: View {
     }
 
     private func header(_ theme: Theme) -> some View {
+        // No Spark mark here (Adam, 2026-08-24): the menu-bar icon and the
+        // now-playing card already carry the brand and the speech pulse, and
+        // the panel's own title does not need a second logo above it.
         HStack(spacing: 9) {
-            Spark(size: 15, pulse: deck.isPlaying ? deck.level : 0)
             Text("SpeakySpeak")
                 .font(.system(size: 15, weight: .semibold, design: .serif))
                 .foregroundStyle(theme.text)
@@ -1194,22 +1196,25 @@ struct DeckView: View {
                     .frame(width: 24, height: 20)
             }
             .buttonStyle(.plain)
-            .help(deck.muted ? "Muted — new replies queue silently. Click to resume." : "Mute — pauses speech, new replies queue silently")
+            .help(deck.muted ? "Muted. New replies queue silently, click to resume." : "Mute pauses speech; new replies keep queuing")
             .accessibilityLabel(deck.muted ? "Unmute" : "Mute")
-            .hoverHint(deck.muted ? "Unmute" : "Mute — replies still queue")
+            .hoverHint(deck.muted ? "Unmute" : "Mute, replies still queue")
             VolumeSlider(theme: theme)
             Button(action: { deck.cycleRate() }) {
                 Text(fmtRate(deck.rate))
                     .font(.system(size: 10, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(deck.rate == 1.0 ? theme.secondary : Theme.accent)
+                    // never accent-tinted: the number already says what the
+                    // speed is, and a second orange element up here competed
+                    // with the play button for attention (Adam, 2026-08-24)
+                    .foregroundStyle(theme.secondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
                     .background(Capsule().fill(theme.track))
             }
             .buttonStyle(.plain)
-            .help("Playback speed — click to cycle")
+            .help("Playback speed, click to cycle")
             .accessibilityLabel("Playback speed")
-            .hoverHint("Speed — click to cycle")
+            .hoverHint("Speed, click to cycle")
         }
     }
 
@@ -1332,9 +1337,9 @@ struct DeckView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .frame(width: 24, height: 20)
-        .help("Sort — group the queue and choose the order it plays in")
+        .help("Sort: group the queue and choose the order it plays in")
         .accessibilityLabel("Sort the queue")
-        .hoverHint("Sort — grouping and play order")
+        .hoverHint("Sort: grouping and play order")
     }
 
     @ViewBuilder private func nowPlaying(_ theme: Theme) -> some View {
@@ -2335,16 +2340,28 @@ struct RainbowRipple: View {
 extension View {
     // The mini HUD's surface. In Liquid Glass mode (macOS 26+) it's the clear
     // glass variant — translucent, sampling whatever's behind the panel. In
-    // Frosted mode (or below macOS 26) it's the classic material card with a
-    // hairline edge. The transport controls carry their own glass in glass mode,
-    // so here the base stays a single subtle tray (no heavy glass-on-glass).
+    // Frosted mode (or below macOS 26) it's an OPAQUE card.
+    //
+    // Frosted used to fill with .regularMaterial, which is translucent by
+    // definition, on a panel that is itself clear and non-opaque. Over a dark
+    // wallpaper the card darkened and took the secondary text down with it,
+    // which is how the reply preview ended up unreadable on Adam's dark
+    // desktop (2026-08-24). Frosted exists precisely so contrast does NOT
+    // depend on the backdrop — the README has called it "the solid, always
+    // legible material card" all along, and this makes that true. Now its
+    // contrast is exactly the popover's, which is known to read well.
     @ViewBuilder
-    func hudSurface(_ style: HUDStyle, cornerRadius r: CGFloat, stroke: Color) -> some View {
+    func hudSurface(_ style: HUDStyle, cornerRadius r: CGFloat,
+                    fill: Color, stroke: Color) -> some View {
         let shape = RoundedRectangle(cornerRadius: r, style: .continuous)
         if #available(macOS 26, *), style == .liquidGlass {
             self.glassEffect(.clear, in: shape)
         } else {
-            self.background(shape.fill(.regularMaterial)
+            // No SwiftUI shadow here: the panel sets hasShadow = true, and now
+            // that the card is opaque the window shadow has a crisp shape to
+            // trace. Adding a soft shadow inside a clear, non-opaque window
+            // draws a grainy halo around the card instead (Adam, 2026-08-24).
+            self.background(shape.fill(fill)
                                 .overlay(shape.strokeBorder(stroke)))
         }
     }
@@ -2390,7 +2407,17 @@ struct MiniDeckView: View {
                 if let cur = deck.current, !cur.preview.isEmpty {
                     Text("· \(cur.preview)")
                         .font(.system(size: 10))
-                        .foregroundStyle(theme.secondary)
+                        // Deliberately stronger than the palette's secondary,
+                        // which measures 3.28:1 on the light card — under the
+                        // 4.5:1 AA floor and unreadable at 10pt once anything
+                        // dims it. Dialling the primary text back to 70% gives
+                        // 5.74:1 light / 6.24:1 dark and still reads as
+                        // subordinate to the session name. (Adam reported this
+                        // twice, 2026-08-24; the card's translucency was the
+                        // other half.) Over glass the system's .secondary
+                        // adapts to the material, so use it there.
+                        .foregroundStyle(glass ? AnyShapeStyle(.secondary)
+                                               : AnyShapeStyle(theme.text.opacity(0.70)))
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2408,7 +2435,7 @@ struct MiniDeckView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Dismiss — pops back up with the next reply")
+                    .help("Dismiss. It pops back up with the next reply")
                 }
             }
             HStack(spacing: 0) {
@@ -2450,7 +2477,7 @@ struct MiniDeckView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
         .frame(width: cardW)
-        .hudSurface(settings.hudStyle, cornerRadius: 15, stroke: theme.cardStroke)
+        .hudSurface(settings.hudStyle, cornerRadius: 15, fill: theme.card, stroke: theme.cardStroke)
         .overlay(RainbowRipple(active: deck.attentionWanted))
         .overlay(ShimmerGlow(startedAt: shimmerStart))
         // transparent margin so the white flash can bloom past the card edge
@@ -2844,12 +2871,6 @@ enum SpeechEngine: String, CaseIterable, Identifiable {
     }
 }
 
-enum MenuBarStyle: String, CaseIterable, Identifiable {
-    case sy, speaker
-    var id: String { rawValue }
-    var label: String { self == .sy ? "Sy mark" : "Speaker (status)" }
-}
-
 // Mini-HUD surface: Apple Liquid Glass (macOS 26+) or the classic frosted card.
 // Liquid Glass is gorgeous but its contrast is backdrop-dependent, so the frosted
 // card stays available as a reliably-legible fallback the user can switch to.
@@ -2920,7 +2941,6 @@ final class SettingsStore: ObservableObject {
     // "end" is the hook's default too, so write nothing for it — an absent file
     // and the string "end" must stay interchangeable (speak-reply.sh line ~79).
     @Published var speakWhen: SpeakWhen = .end     { didSet { guard !loading else { return }; writeOrRemove("speak-when", speakWhen == .end ? "" : speakWhen.rawValue) } }
-    @Published var menuBarStyle: MenuBarStyle = .sy { didSet { guard !loading else { return }; UserDefaults.standard.set(menuBarStyle.rawValue, forKey: "menuBarStyle") } }
     @Published var hudStyle: HUDStyle = .liquidGlass { didSet { guard !loading else { return }; UserDefaults.standard.set(hudStyle.rawValue, forKey: "hudStyle") } }
     @Published var hudVisibility: HUDVisibility = .whileSpeaking { didSet { guard !loading else { return }; UserDefaults.standard.set(hudVisibility.rawValue, forKey: "hudVisibility") } }
 
@@ -2947,7 +2967,6 @@ final class SettingsStore: ObservableObject {
             let v = SettingsStore.loadSayVoices()
             DispatchQueue.main.async { self?.sayVoices = v }
         }
-        menuBarStyle = MenuBarStyle(rawValue: UserDefaults.standard.string(forKey: "menuBarStyle") ?? "") ?? .sy
         hudStyle = UserDefaults.standard.string(forKey: "hudStyle").flatMap(HUDStyle.init) ?? HUDStyle.defaultStyle
         hudVisibility = UserDefaults.standard.string(forKey: "hudVisibility").flatMap(HUDVisibility.init) ?? .whileSpeaking
         reload()
@@ -3312,12 +3331,8 @@ struct SettingsView: View {
         Form {
             Section("Speech") {
                 Toggle("Speak Claude's replies", isOn: $settings.enabled)
-                Picker("Read replies", selection: $settings.speakWhen) {
-                    ForEach(SpeakWhen.allCases) { Text($0.label).tag($0) }
-                }
-                Text(settings.speakWhen.help)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // Voice comes first: it is the setting people change, and the
+                // one they change most often (Adam, 2026-08-24).
                 // No Engine row: Kokoro when installed, system voice otherwise
                 // (~/.claude/speak-engine still overrides for the shell-inclined).
                 if settings.usingKokoro {
@@ -3346,25 +3361,19 @@ struct SettingsView: View {
                         ForEach(["150", "175", "200", "225", "250"], id: \.self) { Text("\($0) wpm").tag($0) }
                     }
                 }
-            }
-            Section("Playback") {
-                Picker("Speed", selection: $deck.rate) {
-                    ForEach(playbackRates, id: \.self) { Text(fmtRate($0)).tag($0) }
+                Picker("Read replies", selection: $settings.speakWhen) {
+                    ForEach(SpeakWhen.allCases) { Text($0.label).tag($0) }
                 }
-                LabeledContent("Volume") {
-                    HStack {
-                        Slider(value: $deck.volume, in: 0...1)
-                        Text("\(Int((deck.volume * 100).rounded()))%")
-                            .monospacedDigit().foregroundStyle(.secondary)
-                            .frame(width: 38, alignment: .trailing)
-                    }
-                }
-                Toggle("Mute — keep queuing, don't play aloud", isOn: $deck.muted)
+                Text(settings.speakWhen.help)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            // Speed, Volume and Mute used to have a Playback section here.
+            // They are all on the deck's own panel, a click away, so a second
+            // copy in Settings was duplication rather than convenience
+            // (Adam, 2026-08-24). Settings now holds only what the panel
+            // cannot express.
             Section("Appearance") {
-                Picker("Menu bar icon", selection: $settings.menuBarStyle) {
-                    ForEach(MenuBarStyle.allCases) { Text($0.label).tag($0) }
-                }
                 Picker("Reading panel", selection: $settings.hudStyle) {
                     ForEach(HUDStyle.allCases) { Text($0.label).tag($0) }
                 }
@@ -3373,20 +3382,20 @@ struct SettingsView: View {
                     Text("Liquid Glass needs macOS 26 or later.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Text("Liquid Glass is translucent and adapts to what's behind it; Frosted is a solid, always-legible card.")
+                    Text("Liquid Glass is translucent. Frosted is a solid card that stays legible on any wallpaper.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Picker("Show reading panel", selection: $settings.hudVisibility) {
                     ForEach(HUDVisibility.allCases) { Text($0.label).tag($0) }
                 }
-                Text("“Always visible” keeps the mini panel on screen as a persistent controller; otherwise it appears only while a reply is being spoken.")
+                Text("“Always visible” keeps the panel on screen as a controller. Otherwise it appears only while a reply is speaking.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             // Version, updating and reporting a problem all live here: the
             // status-item menu used to carry them and grew too tall to fit on
             // short screens (2026-08-17). This is the only place an update is
             // started; the popover and the menu bar just point at it.
-            Section("About & support") {
+            Section("About") {
                 LabeledContent("Version") {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("SpeakySpeak \(updater.localVersion)")
@@ -3430,20 +3439,31 @@ struct SettingsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Button("Email a report…") { Feedback.openMailReport() }
-                Text("Opens a mail draft to \(Feedback.address) with your version, engine and the last few log lines filled in. Add what went wrong and send it.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Button("Have Claude write a report") {
-                    Feedback.copyClaudePrompt()
-                    promptCopied = true
-                    // Self-clearing: the Settings window is reused for the
-                    // app's whole life, so onAppear can't be relied on to
-                    // reset this the next time it opens.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 6) { promptCopied = false }
+                // Reporting stays in About rather than earning its own
+                // section: three sections is the whole window (Adam,
+                // 2026-08-24). Both buttons use the same caption-left /
+                // control-right shape as every other row, including Check for
+                // updates directly above.
+                LabeledContent {
+                    Button("Email a report…") { Feedback.openMailReport() }
+                } label: {
+                    Text("Opens a draft to \(Feedback.address) with your version, engine and recent log lines filled in.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Text(promptCopied ? "Copied. Paste it into Claude Code."
-                                  : "Copies a prompt that tells your Claude Code to gather the logs and draft the mail.")
-                    .font(.caption).foregroundStyle(.secondary)
+                LabeledContent {
+                    Button("Have Claude write it") {
+                        Feedback.copyClaudePrompt()
+                        promptCopied = true
+                        // Self-clearing: the Settings window is reused for the
+                        // app's whole life, so onAppear can't be relied on to
+                        // reset this the next time it opens.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { promptCopied = false }
+                    }
+                } label: {
+                    Text(promptCopied ? "Copied. Paste it into Claude Code."
+                                      : "Copies a prompt so your Claude Code gathers the logs and drafts the mail for you.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
@@ -3474,7 +3494,7 @@ struct SettingsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .help("Preview this voice — switch voices while it plays to hop between them")
+        .help("Preview this voice. Switch voices while it plays to hop between them")
         .accessibilityLabel(previewer.state == .idle ? "Preview voice" : "Stop preview")
     }
 }
@@ -3529,6 +3549,36 @@ final class SettingsWindowController: NSWindowController {
 // this size, so the strokes get a clean morphological dilation (~0.75% of
 // glyph height); and the glyph is centered in a full-bar-height canvas at 64%
 // so there's padding top and bottom (it was clipping at the top before).
+// The mark with a diagonal stroke through it, the way SF Symbols' .slash
+// variants read: one glance says nothing is coming out. Drawn rather than
+// swapped for a speaker symbol so the brand mark stays the menu-bar identity
+// in every state. The transparent channel under the stroke is what keeps the
+// slash legible where it crosses the mark's own strokes.
+func makeSlashedGlyph(_ base: NSImage) -> NSImage {
+    let size = base.size
+    let img = NSImage(size: size)
+    img.lockFocus()
+    base.draw(in: NSRect(origin: .zero, size: size))
+    let inset: CGFloat = 1
+    let from = NSPoint(x: inset, y: inset)
+    let to = NSPoint(x: size.width - inset, y: size.height - inset)
+    let line = NSBezierPath()
+    line.move(to: from)
+    line.line(to: to)
+    line.lineCapStyle = .round
+    NSColor.black.setStroke()
+    // knock a gap out first, then lay the stroke inside it
+    NSGraphicsContext.current?.compositingOperation = .clear
+    line.lineWidth = 3.4
+    line.stroke()
+    NSGraphicsContext.current?.compositingOperation = .sourceOver
+    line.lineWidth = 1.6
+    line.stroke()
+    img.unlockFocus()
+    img.isTemplate = true
+    return img
+}
+
 func makeSyGlyph() -> NSImage {
     let barH = NSStatusBar.system.thickness
     let glyphH = barH * 0.64
@@ -3587,6 +3637,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var pulsePhase: CGFloat = 0
     private var bag = Set<AnyCancellable>()
     private lazy var syGlyph = makeSyGlyph()
+    private lazy var slashedSyGlyph = makeSlashedGlyph(makeSyGlyph())
     private var quietHotKey: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -3646,10 +3697,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         .store(in: &bag)
 
         // Switching the menu-bar icon style (Sy mark ↔ speaker) repaints it.
-        SettingsStore.shared.$menuBarStyle
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.refreshStatus() }
-            .store(in: &bag)
 
         // Toggling "Always visible" ↔ "Only while speaking" shows/hides the HUD now.
         SettingsStore.shared.$hudVisibility
@@ -3764,21 +3811,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let deck = Deck.shared
 
         // While playing, the pulse timer animates the icon (EQ bars) — leave the
-        // image alone here so we don't fight it. Otherwise show the resting glyph.
+        // image alone here so we don't fight it. Otherwise show the resting
+        // glyph, slashed when nothing is going to come out of it: speech off,
+        // muted, or paused part way through a reply. The alternate speaker
+        // icon set and its picker are gone (Adam, 2026-08-24) — one mark, and
+        // the slash carries the state.
         if !deck.isPlaying {
-            if SettingsStore.shared.menuBarStyle == .sy {
-                button.image = syGlyph
-            } else {
-                let symbol: String
-                if !deck.enabled   { symbol = "speaker.slash.fill" }
-                else if deck.muted { symbol = "speaker.fill" }
-                else               { symbol = "speaker.wave.1.fill" }
-                let cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-                let img = NSImage(systemSymbolName: symbol, accessibilityDescription: "SpeakySpeak")?
-                    .withSymbolConfiguration(cfg)
-                img?.isTemplate = true
-                button.image = img
-            }
+            button.image = (!deck.enabled || deck.muted || deck.isPausedMidItem)
+                ? slashedSyGlyph : syGlyph
         }
 
         let queued = deck.items.filter { $0.state == .queued }.count
@@ -3800,7 +3840,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             startPulse()
         } else {
             stopPulse()
-            button.alphaValue = !deck.enabled ? 0.35 : (deck.muted ? 0.55 : 1.0)
+            // full strength always: dimming used to code muted/off, and needed
+            // the tooltip to disambiguate. The slash says it outright, and a
+            // dimmed slash just reads as a smudge in a busy menu bar.
+            button.alphaValue = 1.0
         }
     }
 

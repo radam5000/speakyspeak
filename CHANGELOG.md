@@ -2,6 +2,14 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.4 (2026-08-24)
+
+**The floating panel is readable on any wallpaper.** The Frosted panel style was never actually solid: it used a translucent material, so over a dark desktop the card darkened and took the text with it. It is opaque now, and the reply preview text was measured and strengthened, so contrast no longer depends on what is behind the window.
+
+**One menu-bar icon, with a slash when it is silent.** The alternate speaker icon set and its setting are gone. The Sy mark now wears a diagonal slash whenever nothing is going to be heard, meaning speech is off, muted, or paused part way through a reply. That replaces the old dimming, which looked much the same in every state.
+
+**A tidier Settings window.** Three sections now: Speech, Appearance, About. Voice sits at the top where you reach for it. Speed, volume and mute have moved out, since all three are already on the panel itself, one click away. The two report buttons line up on the right with everything else.
+
 ## 1.2.3 (2026-08-23)
 
 **No more clipped first words when two Macs share one pair of AirPods.** The headphones only move to a Mac once it starts producing audio, and that switch takes about a second, so the opening words of a reply were playing into headphones still attached to the other machine. Now, when the deck has been quiet for a while, it engages the audio output a moment before speaking and starts the reply once the headphones have arrived. Replies that follow one another are unaffected, since the route never left. Set `~/.claude/speak-lead-in` to change the delay in seconds, or to `0` to turn it off.

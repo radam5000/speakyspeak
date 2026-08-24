@@ -66,17 +66,12 @@ Open Settings from the gear on the panel's "Up next" line, or right-click the me
 
 ### Playback
 
-| Setting | What it does |
-| --- | --- |
-| **Speed** | 0.8× to 2×. Also on the panel, as the pill next to the volume slider. |
-| **Volume** | Playback volume. Every reply is loudness-normalized before it plays, so 100% is normal speech level and replies match each other. |
-| **Mute** | The speaker icon. Replies keep rendering and queueing, nothing plays. Survives restarts. |
+Speed, volume and mute live on the panel itself, not in Settings: the speaker icon mutes, the slider sets volume, and the pill next to it cycles speed from 0.8× to 2×. Every reply is loudness-normalized before it plays, so 100% is normal speech level and replies match each other. All three persist across restarts.
 
 ### Appearance
 
 | Setting | What it does |
 | --- | --- |
-| **Menu-bar icon** | The Sy mark or a speaker glyph. Either one carries the queue count and pulses while speaking. |
 | **Reading panel style** | **Liquid Glass** (macOS 26+) or **Frosted**, the solid card. Switch to Frosted if the glass is hard to read over your wallpaper. |
 | **When it shows** | **Only while speaking** appears with a reply and fades after. **Always visible** keeps a small controller on screen. Either way you can drag it anywhere and it stays there. |
 
