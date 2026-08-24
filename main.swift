@@ -404,7 +404,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         resort()   // the "current session finishes its run" pin just moved
         duration = p.duration
         progress = 0
-        p.play()
+        startPlayer(p)
         isPlaying = true
         startMeter()
         triggerFlash()   // new reply / skip / back all land here → flash
@@ -426,6 +426,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     private func tick() {
         guard let p = player else { return }
+        if p.isPlaying { lastAudioAt = Date() }   // the route is ours while sound is flowing
         if !scrubbing { progress = p.currentTime }
         p.updateMeters()
         let db = Double(p.averagePower(forChannel: 0))
@@ -750,12 +751,49 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
 
+    // Two Macs sharing one pair of AirPods: the headphones only move to this
+    // Mac once it actually starts producing audio, and that handoff costs
+    // roughly a second — which swallowed the opening words of every reply that
+    // followed the other Mac (Adam, 2026-08-23). Waiting longer before playing
+    // does not help, because nothing is asking for the route until we play.
+    //
+    // So when the deck has been silent long enough that the route has probably
+    // moved away, playback is SCHEDULED a beat into the future rather than
+    // started now: the audio device engages immediately and runs through the
+    // gap, and the speech begins once the headphones are here to hear it.
+    // Chained replies never pay the delay — the gap between them is ~2s, well
+    // under the idle threshold.
+    private var lastAudioAt: Date = .distantPast
+    private let routeIdleThreshold: Double = 6
+
+    // ~/.claude/speak-lead-in, seconds; 0 disables, clamped to 5
+    private var leadInSeconds: Double {
+        let path = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/speak-lead-in").path
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8),
+              let v = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return 1.2 }
+        return min(max(0, v), 5)
+    }
+
+    private func startPlayer(_ p: AVAudioPlayer) {
+        let idle = Date().timeIntervalSince(lastAudioAt)
+        let lead = idle > routeIdleThreshold ? leadInSeconds : 0
+        // a failed schedule must never mean silence — fall back to playing now
+        if lead > 0, p.play(atTime: p.deviceCurrentTime + lead) {
+            dlog(String(format: "lead-in %.2fs before audio (silent %.0fs, route may have moved)", lead, idle))
+        } else {
+            p.play()
+        }
+        lastAudioAt = Date()
+    }
+
     // Resume (or replay) the existing player for the current item — the shared
     // tail of "unpause" from toggleMute and togglePlay.
     private func resumeCurrent(_ p: AVAudioPlayer) {
         if let id = currentID { setState(id, .playing) }
         p.rate = Float(rate)
-        p.play()
+        startPlayer(p)
         isPlaying = true
         startMeter()
     }
