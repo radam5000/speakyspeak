@@ -2546,6 +2546,20 @@ final class ClickThroughHostingView<V: View>: NSHostingView<V> {
 // Owns the floating HUD panel: positions it under the status button, fades it in
 // while speaking and out when quiet. It never activates the app or steals focus
 // (.nonactivatingPanel + becomesKeyOnlyIfNeeded), so it can't interrupt typing.
+extension NSStatusBarButton {
+    // Where the icon is actually drawn inside the status item, which is NOT
+    // the item's centre once a badge is present. Everything that points at the
+    // icon (the popover's arrow, the mini HUD) aims here, so a badge appearing
+    // or clearing can never leave them pointing at a number or at bare menu
+    // bar. AppKit knows the answer exactly; don't estimate it — a hand-rolled
+    // "square at the trailing edge" guess measured 5 to 7pt off.
+    var glyphRect: NSRect {
+        guard let cell = cell as? NSButtonCell else { return bounds }
+        let r = cell.imageRect(forBounds: bounds)
+        return r.isEmpty || r.isInfinite ? bounds : r
+    }
+}
+
 final class MiniHUDController {
     static let shared = MiniHUDController()
 
@@ -2713,7 +2727,11 @@ final class MiniHUDController {
         guard let button = anchor, let bwin = button.window else {
             p.setContentSize(size); return
         }
-        let bf = bwin.convertToScreen(button.convert(button.bounds, to: nil))
+        // centre on the ICON, not the status item: with a queue badge the
+        // item's centre sits between the number and the glyph, and it moves
+        // whenever the count changes
+        let glyph = button.glyphRect
+        let bf = bwin.convertToScreen(button.convert(glyph, to: nil))
         let screen = bwin.screen ?? NSScreen.main
         let vf = screen?.visibleFrame ?? NSRect(origin: .zero, size: size)
         var x = bf.midX - size.width / 2
@@ -3545,7 +3563,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.imagePosition = .imageLeft
+            // The count sits BEFORE the icon, which is not a style choice.
+            // A variable-length status item keeps its RIGHT edge fixed and
+            // grows leftward (measured 2026-08-23: right edge 1626.0 with a
+            // badge and without one; only the left edge moved, by 24pt). With
+            // the icon on the left it therefore slid 24pt sideways every time
+            // the badge cleared or went 9 to 10, which left an open popover's
+            // arrow pointing at bare menu bar and moved the click target under
+            // Adam's cursor. On the right, the icon holds still (within 2pt of
+            // padding) and the count grows away from it into empty space.
+            button.imagePosition = .imageRight
             button.font = .systemFont(ofSize: 11, weight: .semibold)
             button.target = self
             button.action = #selector(statusClicked(_:))
@@ -3654,7 +3681,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popover.performClose(nil)
         } else {
             NSApp.activate(ignoringOtherApps: true)   // so sliders/scrubber take clicks
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.show(relativeTo: button.glyphRect, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
     }
@@ -3717,15 +3744,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         let queued = deck.items.filter { $0.state == .queued }.count
-        var title = queued > 0 ? " \(queued)" : ""
+        var parts: [String] = []
+        if queued > 0 { parts.append("\(queued)") }
         var tip = stateTooltip(deck, queued: queued)
         // A waiting update gets a persistent ↑ next to the icon, so it's
         // visible without opening the menu; the tooltip says what to do.
         if let v = Updater.shared.availableVersion {
-            title += " ↑"
+            parts.append("↑")
             tip += "\nUpdate to \(v) available. Open Settings to install it."
         }
-        button.title = title
+        // trailing space, not leading: the title is drawn to the LEFT of the
+        // icon now (see imagePosition above)
+        button.title = parts.isEmpty ? "" : parts.joined(separator: " ") + " "
         button.toolTip = tip
 
         if deck.isPlaying {

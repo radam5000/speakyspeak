@@ -2,6 +2,10 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.2 (2026-08-23)
+
+**The menu-bar icon stops moving.** The queue count now sits before the icon instead of after it. A menu bar item keeps its right edge fixed and grows leftward, so with the count on the right the icon slid sideways every time the count appeared, cleared, or went from 9 to 10. That left the panel's arrow pointing at bare menu bar after you cleared the queue, and it meant the icon you aim your cursor at was never quite in the same place. Now it holds still. The panel and the floating player also aim at the icon itself rather than at the middle of the item, so the arrow lands on the glyph even when a count is showing.
+
 ## 1.2.1 (2026-08-23)
 
 **A guide.** [GUIDE.md](GUIDE.md) is new: how to set up Claude Code so listening actually works, and what every setting does. The part worth reading first is the timestamp rule. Add one line to your `CLAUDE.md` and every reply opens by saying what time it was written, which is what makes a queue of replies legible when you come back to it.
