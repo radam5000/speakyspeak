@@ -10,6 +10,10 @@ Everything runs on your machine. No cloud TTS, no API keys, no subscription. Fre
 
 It is a playback layer, not a voice mode: it never touches your input, so you keep typing normally and just hear the answers.
 
+## Guide
+
+[GUIDE.md](GUIDE.md) is the how-to-work-with-it doc: the `CLAUDE.md` timestamp rule that makes a queued backlog legible by ear, the suggested multi-session setup, and every setting explained in one place. Read it after installing.
+
 ## Feedback
 
 Found a bug or want something changed? Email **[hi@speakyspeak.com](mailto:hi@speakyspeak.com)** and a human reads it and replies. Prefer public tracking? Open a [GitHub Issue](https://github.com/radam5000/speakyspeak/issues). Fastest of all: open **Settings ▸ About & support** (right-click the menu-bar icon → Settings…) and use **Email a report…**, which pre-fills an email with your version, engine, and recent log lines so the report arrives debuggable. **Have Claude write the report** does the same job the other way: it copies a prompt you paste into Claude Code, which reads the logs, writes the report, and opens the draft for you to send.

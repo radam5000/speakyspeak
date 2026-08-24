@@ -2343,14 +2343,23 @@ struct MiniDeckView: View {
                     .font(.system(size: 12, weight: .semibold, design: .serif))
                     .foregroundStyle(glass ? AnyShapeStyle(.primary) : AnyShapeStyle(theme.text))
                     .lineLimit(1)
-                if let cur = deck.current, let pos = deck.runPosition(of: cur) {
-                    Text("· \(pos.index) of \(pos.count)")
-                        .font(.system(size: 10).monospacedDigit())
+                    .layoutPriority(1)   // the name never gets squeezed by the preview
+                // The opening words of what's being read, running across the
+                // rest of the bar. This replaced a "1 of 13" run counter
+                // (Adam, 2026-08-23): on a panel with no other text, knowing
+                // WHAT is being read beats knowing where it sits in a queue.
+                // The counter still lives on the popover's now-playing card.
+                if let cur = deck.current, !cur.preview.isEmpty {
+                    Text("· \(cur.preview)")
+                        .font(.system(size: 10))
                         .foregroundStyle(theme.secondary)
                         .lineLimit(1)
-                        .accessibilityLabel("Reply \(pos.index) of \(pos.count) from this session")
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel("Now reading: \(cur.preview)")
+                } else {
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
                 // no per-reply dismiss when the panel is pinned "always visible"
                 if settings.hudVisibility != .always {
                     Button(action: { MiniHUDController.shared.dismiss() }) {

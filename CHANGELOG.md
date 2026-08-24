@@ -2,6 +2,12 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.1 (2026-08-23)
+
+**A guide.** [GUIDE.md](GUIDE.md) is new: how to set up Claude Code so listening actually works, and what every setting does. The part worth reading first is the timestamp rule. Add one line to your `CLAUDE.md` and every reply opens by saying what time it was written, which is what makes a queue of replies legible when you come back to it.
+
+**The floating player shows what it's reading.** The title line now carries the opening words of the reply instead of a "1 of 13" counter. The counter is still on the panel's now playing card, where there's room for both.
+
 ## 1.2.0 (2026-08-23)
 
 **Hear a session's replies in order.** If you run several Claude Code sessions at once, their replies used to arrive interleaved and newest first, so a session's story played backwards with another project's replies spliced into the middle. There is now a sort button on the "Up next" line. Set Group by to Session and Order by to Oldest first, and each session's replies play as one run, in the order they actually happened, one session at a time. A new reply extends its own session's run instead of jumping the queue.

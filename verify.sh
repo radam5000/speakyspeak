@@ -66,6 +66,48 @@ else
   res $? "app alive after 5s, no new crash report (alive=$ALIVE crashes:$BEFORE->$AFTER)"
 fi
 
+step "6. docs in sync"
+# Docs rot silently: the site advertised per-row reorder chevrons for hours
+# after they were deleted, and claimed "never mid-turn noise" after the
+# as-it-works modes shipped (both caught by hand 2026-08-23, which is why this
+# step exists). These are the checks a machine can actually make; the judgment
+# calls still belong to whoever ships. Keep RETIRED growing as features go.
+DOCS="README.md INSTALL.md GUIDE.md CHANGELOG.md site/index.html"
+DFAIL=0
+
+# every doc a doc links to must exist
+for f in $DOCS; do
+  for link in $(grep -oE '\]\(([A-Z][A-Za-z]*\.md)\)' "$f" 2>/dev/null | tr -d '])(' ); do
+    [ -f "$link" ] || { echo "  $f links to missing $link"; DFAIL=$((DFAIL+1)); }
+  done
+done
+
+# the release notes must mention the version we are about to ship
+V=$(cat VERSION)
+grep -q "^## $V " CHANGELOG.md || { echo "  CHANGELOG.md has no '## $V' entry"; DFAIL=$((DFAIL+1)); }
+
+# phrases describing things the app no longer does
+while IFS='|' read -r pat why; do
+  [ -z "$pat" ] && continue
+  for f in $DOCS; do
+    grep -qi -- "$pat" "$f" 2>/dev/null && { echo "  $f still says '$pat' ($why)"; DFAIL=$((DFAIL+1)); }
+  done
+done <<'RETIRED'
+move up or down|per-row reorder chevrons were removed in 1.2.0
+play earlier|per-row reorder chevrons were removed in 1.2.0
+never mid-turn noise|the as-it-works read modes shipped in 1.1.x
+Order groups|the group-order control was cut before 1.2.0 shipped
+Project or repo|grouping by project was cut before 1.2.0 shipped
+RETIRED
+
+# the guide has to actually cover what Adam asked it to cover
+for must in "showMessageTimestamps" "speak-when" "Group by" "hi@speakyspeak.com"; do
+  grep -q -- "$must" GUIDE.md || { echo "  GUIDE.md no longer mentions $must"; DFAIL=$((DFAIL+1)); }
+done
+
+echo "docs checked: $(echo $DOCS | wc -w | tr -d ' ') file(s), $DFAIL problem(s)"
+[ "$DFAIL" -eq 0 ]; res $? "docs in sync"
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "VERIFY: ALL GREEN"; exit 0
 else echo "VERIFY: FAILED"; exit 1; fi

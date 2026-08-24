@@ -289,3 +289,7 @@ Before auto-playing, each deck asks the peer (TCP port 48765) and waits if the p
 ---
 
 Full architecture, controls reference, and settings-window documentation: [README.md](README.md).
+
+## Next: hand them the guide
+
+Installation done. Point the user at [GUIDE.md](GUIDE.md) and say what it covers: the `CLAUDE.md` timestamp rule (so a queue of replies says when each was written), the suggested setup for running several sessions at once, and what every setting does. If they run more than one Claude Code session, the sort menu's "Group by: Session" plus "Order by: Oldest first" is the single most useful thing in it.
