@@ -10,9 +10,11 @@ Everything runs on your machine. No cloud TTS, no API keys, no subscription. Fre
 
 It is a playback layer, not a voice mode: it never touches your input, so you keep typing normally and just hear the answers.
 
-## Guide
+## How to use it
 
-[GUIDE.md](GUIDE.md) is the how-to-work-with-it doc: the `CLAUDE.md` timestamp rule that makes a queued backlog legible by ear, the suggested multi-session setup, and every setting explained in one place. Read it after installing.
+**[speakyspeak.com/howto](https://speakyspeak.com/howto)** is the five-minute visual tour: real screenshots of every part of the app, what each control does, and a good way to set it all up. Start there.
+
+[GUIDE.md](GUIDE.md) is the full reference behind it: the `CLAUDE.md` timestamp rule that makes a queued backlog legible by ear, the suggested multi-session setup, and every setting explained in one place.
 
 ## Feedback
 

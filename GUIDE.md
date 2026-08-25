@@ -1,6 +1,6 @@
-# SpeakySpeak: how to work with it
+# SpeakySpeak: the full guide
 
-Install instructions are in [INSTALL.md](INSTALL.md). This is the guide for after it's running: how to set up Claude Code so listening actually works, and what every setting does.
+Install instructions are in [INSTALL.md](INSTALL.md), and [speakyspeak.com/howto](https://speakyspeak.com/howto) is the five-minute visual tour with real screenshots. This is the full reference for after it's running: how to set up Claude Code so listening actually works, and what every setting does.
 
 - [Set this up first](#set-this-up-first)
 - [Timestamps in your replies](#timestamps-in-your-replies)
@@ -46,6 +46,8 @@ None of this is required. One session works fine on its own. This is the setup t
 **Name your sessions.** `/rename wedding` gives that session a name, and the panel and the mini player use it instead of the folder name. Worth doing when two sessions live in the same repo.
 
 **Start long runs, then walk away.** Set Read replies to "As it works, skipping short lines" and you'll hear the steps that matter without hearing "Let me check that."
+
+**Clear the list before you walk away.** While you're at the computer reading everything as it lands, pause playback. When you kick off runs and leave, clear the list first (the trash on the Up next line, or the sweep for just the played ones): once you've read everything there's no harm in it, and every reply you hear after that is news, not backlog.
 
 **Group by session when several are running.** Sort menu ▸ Group by ▸ Session, and Order by ▸ Oldest first. Each session's replies then play as one run, in the order they happened, instead of all the sessions interleaved newest first. See [the sort menu](#the-sort-menu).
 

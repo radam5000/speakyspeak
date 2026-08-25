@@ -21,8 +21,16 @@ import CoreText
 import CoreImage
 import Carbon.HIToolbox   // global "quiet" hotkey (RegisterEventHotKey — no Accessibility prompt)
 
-let queueDir = URL(fileURLWithPath: "/tmp/claude-speech/queue", isDirectory: true)
-let logPath = "/tmp/claude-speech/deck.log"
+// SPEAKYSPEAK_SPEECH_ROOT relocates all runtime state, mirroring the hook's
+// test-isolation seam, so a second instance can run without touching the live
+// deck. SPEAKYSPEAK_DEMO stages canned queue content for pixel-true website /
+// README screenshots (see Deck.seedDemo); its value picks the scene:
+//   "deck" = popover pinned open · "hud" = mini player up · anything = staged data.
+// Both are unset in normal use and change nothing.
+let speechRoot = ProcessInfo.processInfo.environment["SPEAKYSPEAK_SPEECH_ROOT"] ?? "/tmp/claude-speech"
+let queueDir = URL(fileURLWithPath: speechRoot + "/queue", isDirectory: true)
+let logPath = speechRoot + "/deck.log"
+let demoScene: String? = ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO"]
 
 func dlog(_ s: String) {
     let line = "\(Date()) \(s)\n"
@@ -188,7 +196,8 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // Unmuting brings the whole backlog back. Persists across relaunches;
     // entries are pruned in rescan() once a session has no items left.
     @Published var mutedSessions: Set<String> = [] {
-        didSet { UserDefaults.standard.set(Array(mutedSessions), forKey: "mutedSessions") }
+        // demo staging must not leak its fake session ids into real defaults
+        didSet { if demoScene == nil { UserDefaults.standard.set(Array(mutedSessions), forKey: "mutedSessions") } }
     }
     // AVAudioPlayer volume is attenuate-only (0…1); the hook loudness-normalizes
     // renders so 1.0 here matches normal speech level
@@ -302,9 +311,59 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func start() {
         try? FileManager.default.createDirectory(at: queueDir, withIntermediateDirectories: true)
         dlog("deck started (muted: \(muted), rate: \(rate), enabled: \(enabled))")
+        if demoScene != nil { seedDemo(); return }   // staged content, no watching, no audio
         rescan(initial: true)
         watch()
         watchClaudeDir()
+    }
+
+    // Screenshot staging (SPEAKYSPEAK_DEMO): a believable in-memory queue with
+    // every state the site needs to show — playing, next up, queued, a muted
+    // session, played history — and one row pinned "hovered" so its action
+    // buttons are visible without a mouse. Nothing here touches disk or
+    // defaults, and no player is created, so it can never make a sound.
+    // SPEAKYSPEAK_DEMO_HOVER=0 disables the pinned hover, for shots (like the
+    // flat-vs-grouped ordering comparison) where action buttons would distract
+    static let demoHoverID: String? =
+        (demoScene != nil && ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_HOVER"] != "0")
+        ? "d2" : nil
+
+    private func seedDemo() {
+        let now = Date()
+        func mk(_ id: String, _ sid: String, _ title: String, _ preview: String,
+                _ age: TimeInterval, _ state: SpeechItem.State) -> SpeechItem {
+            var it = SpeechItem(id: id, sessionId: sid, project: title, title: title,
+                                preview: preview, text: preview,
+                                created: now.addingTimeInterval(-age),
+                                audioURL: queueDir.appendingPathComponent(id + ".m4a"))
+            it.state = state
+            return it
+        }
+        // the cast matches the three sessions on the site's home screen —
+        // nothing here may reference a real project's private content
+        items = [
+            mk("d0", "s-ev", "everething", "Index rebuilt. Now rewiring the lookups, starting with the search bar…", 41, .playing),
+            mk("d1", "s-ev", "everething", "Now the tokenizer swap:", 95, .queued),
+            mk("d2", "s-ev", "everething", "Two files change for the new index:", 150, .queued),
+            mk("d3", "s-es", "events-site", "Newsletter built; 14 events made the cut.", 230, .queued),
+            mk("d4", "s-es", "events-site", "Deploy queued behind the image fetch:", 320, .queued),
+            mk("d5", "s-mm", "markemark", "Found the leak: the preview pane webview.", 410, .queued),
+            mk("d6", "s-ev", "everething", "Search refactor planned, three steps.", 700, .done),
+            mk("d7", "s-mm", "markemark", "Build is green; preview pane profiled.", 820, .done),
+        ]
+        mutedSessions = ["s-es"]
+        currentID = "d0"
+        duration = 34
+        progress = 13
+        isPlaying = true   // visual only: no AVAudioPlayer exists in demo
+        // the sort didSets skip persistence in demo, so this never leaks
+        switch ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_SORT"] {
+        case "flat":    groupBy = .none;    replyOrder = .newest
+        case "grouped": groupBy = .session; replyOrder = .oldest
+        default: break
+        }
+        resort()
+        dlog("demo scene \(demoScene ?? "?") staged")
     }
 
     private func watch() {
@@ -660,10 +719,10 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // All three axes are user-settable from the footer's sort menu and persist.
     // Never sort `items` by hand anywhere else; call resort().
     @Published var groupBy: GroupBy = .none {
-        didSet { UserDefaults.standard.set(groupBy.rawValue, forKey: "groupBy"); resort() }
+        didSet { if demoScene == nil { UserDefaults.standard.set(groupBy.rawValue, forKey: "groupBy") }; resort() }
     }
     @Published var replyOrder: ReplyOrder = .newest {
-        didSet { UserDefaults.standard.set(replyOrder.rawValue, forKey: "replyOrder"); resort() }
+        didSet { if demoScene == nil { UserDefaults.standard.set(replyOrder.rawValue, forKey: "replyOrder") }; resort() }
     }
 
     private var groupBoost: [String: Date] = [:]   // "Play this session next" taps
@@ -1723,6 +1782,8 @@ struct DeckRow: View {
     let grouped: Bool
     let theme: Theme
     @State private var hover = false
+    // demo staging pins one row's hover state so screenshots show the actions
+    private var effHover: Bool { hover || item.id == Deck.demoHoverID }
 
     var body: some View {
         HStack(spacing: 2) {
@@ -1759,7 +1820,7 @@ struct DeckRow: View {
             .padding(.vertical, grouped ? 2 : 4)
             .padding(.leading, grouped ? 14 : 7)
 
-            if hover {
+            if effHover {
                 Button(action: { deck.play(item) }) {
                     Image(systemName: "play.circle.fill")
                         .font(.system(size: 14))
@@ -1786,7 +1847,7 @@ struct DeckRow: View {
         .padding(.trailing, 12)   // clear of the right edge even with forced scroll bars
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isCurrent ? Theme.accent.opacity(0.13) : hover ? theme.hover : .clear))
+                .fill(isCurrent ? Theme.accent.opacity(0.13) : effHover ? theme.hover : .clear))
         .onHover { inside in
             hover = inside
             // the hover buttons vanish with the row highlight, so their
@@ -3139,6 +3200,9 @@ final class SettingsStore: ObservableObject {
             ?? (storedHUD == "frosted" ? .classic
                 : storedHUD == "liquidGlass" ? .glassy : HUDStyle.defaultStyle)
         hudVisibility = UserDefaults.standard.string(forKey: "hudVisibility").flatMap(HUDVisibility.init) ?? .whileSpeaking
+        // screenshots need the opaque surface: glass bakes whatever desktop was
+        // behind it into the capture (didSet is inert while loading, no persist)
+        if demoScene != nil { loading = true; hudStyle = .classic; loading = false }
         reload()
     }
 
@@ -3617,6 +3681,13 @@ struct SettingsView: View {
                 } else {
                     versionLabel
                 }
+                LabeledContent {
+                    Button("Open the tour") {
+                        NSWorkspace.shared.open(URL(string: "https://speakyspeak.com/howto")!)
+                    }
+                } label: {
+                    Text("How to use it")
+                }
                 if let v = updater.availableVersion {
                     // The update runs for ~a minute; every state is visible
                     // here (2026-08-18: a silent updater cost a real user a
@@ -3870,7 +3941,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         Deck.shared.start()
         refreshStatus()
-        Updater.shared.start()
+        if demoScene == nil { Updater.shared.start() }
 
         // Rebuild the icon only on discrete state changes — not on every
         // progress/level tick (the pulse handles loudness separately).
@@ -3905,10 +3976,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .sink { [weak self] _ in self?.updateHUD() }
             .store(in: &bag)
 
-        registerQuietHotKey()
-        NowPlayingBridge.shared.setup()
-        PeerGate.shared.start()
+        // A demo instance runs beside the live deck: it must not steal the
+        // global hotkey, the Now Playing seat, or the peer-gate port.
+        if demoScene == nil {
+            registerQuietHotKey()
+            NowPlayingBridge.shared.setup()
+            PeerGate.shared.start()
+        }
         updateHUD()
+
+        // Demo scenes stage the window to capture: "deck" pins the popover
+        // open (applicationDefined so a screenshot pass can't dismiss it);
+        // "hud" leaves the mini player up on its own.
+        if demoScene == "deck" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
+                guard let button = statusItem?.button else { return }
+                popover.behavior = .applicationDefined
+                popover.show(relativeTo: button.glyphRect, of: button, preferredEdge: .minY)
+            }
+        }
+        if demoScene == "settings" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                SettingsWindowController.shared.show()
+            }
+        }
     }
 
     // ⌃⌥⌘Space, registered system-wide via Carbon so it works from any app and
