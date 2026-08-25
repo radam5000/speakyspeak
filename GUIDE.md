@@ -43,7 +43,7 @@ None of this is required. One session works fine on its own. This is the setup t
 
 **A window per project, each its own color.** In iTerm2: Session ▸ Edit Session ▸ Tab Color. When you hear a reply, you already know which window to look at.
 
-**Name your sessions.** `/rename wedding` gives that session a name, and the panel and the mini player use it instead of the folder name. Worth doing when two sessions live in the same repo.
+**Name your sessions.** `/rename newsletter` gives that session a name, and the panel and the mini player use it instead of the folder name. Worth doing when two sessions live in the same repo.
 
 **Start long runs, then walk away.** Set Read replies to "As it works, skipping short lines" and you'll hear the steps that matter without hearing "Let me check that."
 
@@ -76,7 +76,7 @@ Speed, volume and mute live on the panel itself, not in Settings: the speaker ic
 | --- | --- |
 | **Mini player** | **Classic**, **Glassy** (the default), or **Glassier**. Classic is a solid card that reads the same on any wallpaper. Glassy is translucent and adapts itself to what is behind it. Glassier is more transparent still. Both glass looks need macOS 26. |
 | **Accent colour** | The orange used throughout the app. Most of the slider sweeps through colours at a fixed saturation and brightness, so any choice keeps the same muted feel; the last stretch leaves colour behind and runs white to grey to black. Reset returns the original terracotta. |
-| **When it shows** | **Only while speaking** appears with a reply and fades after. **Always visible** keeps a small controller on screen. Either way you can drag it anywhere and it stays there. |
+| **Show mini player** | **Only while speaking** appears with a reply and fades after. **Always visible** keeps a small controller on screen. Either way you can drag it anywhere and it stays there. |
 
 ### Controls on the panel
 
@@ -85,7 +85,7 @@ The row above the queue, on the "Up next" line. Hovering any of them replaces th
 | Control | What it does |
 | --- | --- |
 | **⇅ Sort** | Grouping and play order. [Details below](#the-sort-menu). |
-| **Sweep** | Clears every reply you've already heard. |
+| **Clear played** | Clears every reply you've already heard. |
 | **Trash** | Deletes everything, played and queued. |
 | **Gear** | Settings. |
 
@@ -139,4 +139,4 @@ Logs live in `/tmp/claude-speech/`: `hook.log` for rendering, `deck.log` for the
 - **It reads things you don't want.** Set Read replies back to "When Claude finishes."
 - **The voice sounds wrong or slow.** The neural voice may have fallen back to macOS voices. `hook.log` records which engine each reply used.
 
-Still stuck, or something's just annoying? Email [hi@speakyspeak.com](mailto:hi@speakyspeak.com). Settings ▸ About & support has two buttons that write the report for you, including one that hands your own Claude Code the job of gathering the logs.
+Still stuck, or something's just annoying? Email [hi@speakyspeak.com](mailto:hi@speakyspeak.com). Settings ▸ Report an issue has two buttons ("Email draft" and "Claude draft") that write the report for you, including one that hands your own Claude Code the job of gathering the logs.

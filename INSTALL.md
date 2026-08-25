@@ -63,7 +63,7 @@ Expected: the folder `~/speakyspeak` now exists and contains `install.sh`, `READ
 
 The location is free-form — `~/speakyspeak` is just a sensible default; a projects folder like `~/Development/speakyspeak` works the same (the app records wherever the clone lives).
 
-**Do not delete this folder after install.** The app checks for updates daily and shows "Update to X…" in Settings ▸ About & support (the menu-bar icon grows a ↑ when one is waiting); updating re-pulls from this exact clone. Deleting it breaks future updates, not just the source copy.
+**Do not delete this folder after install.** The app checks for updates daily and shows "Update to X…" in Settings ▸ About (the menu-bar icon grows a ↑ when one is waiting); updating re-pulls from this exact clone. Deleting it breaks future updates, not just the source copy.
 
 ---
 
@@ -233,7 +233,7 @@ Expected: the clip plays aloud and `deck.log` shows `queued` → `playing` → `
 
 On current Claude Code, `settings.json` hook changes are picked up without restarting — so THIS session's next reply may already be spoken aloud. Send any short reply and listen. If it speaks: step 7 is done. (On older Claude Code versions hooks only load at session start; in that case ask the user to start a **new** session — a new terminal window, a new chat in the desktop app, or a new Claude Code panel/tab in VS Code or Cursor — and send it any short message.)
 
-Within a few seconds of the reply finishing, expected: the reply is spoken aloud, the menu-bar icon shows a queue badge and pulses, and a small floating player appears under the icon.
+Within a few seconds of the reply finishing, expected: the reply is spoken aloud, the menu-bar icon shows a queue badge and pulses, and the mini player appears under the icon.
 
 Then confirm it from the log — this is the part you can check yourself:
 ```sh
