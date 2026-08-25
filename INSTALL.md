@@ -203,7 +203,7 @@ Expected: `valid JSON`, no error.
 ```sh
 open ~/Applications/SpeakySpeak.app
 ```
-Expected: a "Sy" icon appears in the menu bar (left-click for the queue panel, right-click for Settings / Mute / Quit). You can't see the menu bar yourself, so treat the next command as the real check and ask the user to confirm the icon.
+Expected: a "Sy" icon appears in the menu bar (left-click for the full deck, right-click for Settings / Mute / Quit). You can't see the menu bar yourself, so treat the next command as the real check and ask the user to confirm the icon.
 
 ```sh
 pgrep -f SpeakySpeak.app/Contents/MacOS/SpeakySpeak
@@ -258,7 +258,7 @@ Expected: a `spoke <id> engine=... chars=... secs=...` line per spoken reply (ad
 | Audio plays but is much quieter than normal speech | `ffmpeg` not installed; hook fell back to `afconvert` with no gain stage | `brew install ffmpeg`, then just wait for the next reply (no reinstall needed — the hook checks for ffmpeg on every run) |
 | ~3 second delay before every reply starts speaking | Warm TTS daemon isn't running, OR the daemon is fine but the **active voice isn't cached** — the daemon runs offline (`HF_HUB_OFFLINE=1`) and can't fetch a missing voice, so every render falls to the cold CLI. `tts-daemon.log` showing `IncompleteSnapshotError` with a `voices/*.safetensors` file confirms it | Cache the voice the hook actually uses: `V=$(cat ~/.claude/speak-voice-kokoro 2>/dev/null \|\| echo bf_lily); ~/.local/bin/mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --voice "$V" --text ok --file_prefix /tmp/vfix --join_audio; rm -f /tmp/vfix*.wav`, then `launchctl kickstart -k gui/$(id -u)/com.adamraabe.speakyspeak-tts`; check `~/Library/Logs/speakyspeak-tts.err.log` for other crash detail |
 | No speech at all, and `/tmp/claude-speech/hook.log` has no new lines after a turn | Hook not registered in `~/.claude/settings.json`, or the session predates the registration on an older Claude Code | Recheck step 5's JSON is valid and merged correctly; if still silent, start a **new** Claude Code session |
-| No speech at all, but `hook.log` shows the hook ran | `~/.claude/speak-off` exists (hard kill), or the deck is muted | `rm -f ~/.claude/speak-off`; right-click the menu-bar icon and check Mute is off |
+| No speech at all, but `hook.log` shows the hook ran | `~/.claude/speak-off` exists (hard kill), or the app is muted | `rm -f ~/.claude/speak-off`; right-click the menu-bar icon and check Mute is off |
 | Voice sounds robotic / like the built-in macOS voice | Kokoro isn't installed, the daemon/CLI failed, or the **active voice isn't cached** (see the delay row above) and both Kokoro paths failed | Check `hook.log` for `engine=say` lines; cache the active voice per the delay row, redo step 3 if Kokoro was never installed, then `./install.sh` again; or in System Settings → Accessibility → Spoken Content → System Voice, download a better voice (e.g. Ava Premium) — the hook finds it automatically |
 | No menu-bar icon | App isn't running | `open ~/Applications/SpeakySpeak.app` |
 
@@ -284,7 +284,7 @@ If this Mac and another Mac both run SpeakySpeak and share AirPods, they can tak
 echo "<other-mac-ip>" > ~/.claude/speak-peer
 ```
 
-Before auto-playing, each deck asks the peer (TCP port 48765) and waits if the peer is currently speaking, so macOS's AirPods auto-switching hands off cleanly instead of overlapping. Manual plays (clicking a queued item) never wait. If the file is absent, the peer is off, or it's unreachable, the deck just plays — this fails open and is skippable if only one Mac is in use.
+Before auto-playing, each Mac asks the peer (TCP port 48765) and waits if the peer is currently speaking, so macOS's AirPods auto-switching hands off cleanly instead of overlapping. Manual plays (clicking a queued item) never wait. If the file is absent, the peer is off, or it's unreachable, the app just plays — this fails open and is skippable if only one Mac is in use.
 
 ---
 

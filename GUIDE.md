@@ -43,7 +43,7 @@ None of this is required. One session works fine on its own. This is the setup t
 
 **A window per project, each its own color.** In iTerm2: Session ▸ Edit Session ▸ Tab Color. When you hear a reply, you already know which window to look at.
 
-**Name your sessions.** `/rename newsletter` gives that session a name, and the panel and the mini player use it instead of the folder name. Worth doing when two sessions live in the same repo.
+**Name your sessions.** `/rename newsletter` gives that session a name, and the full deck and the mini player use it instead of the folder name. Worth doing when two sessions live in the same repo.
 
 **Start long runs, then walk away.** Set Read replies to "As it works, skipping short lines" and you'll hear the steps that matter without hearing "Let me check that."
 
@@ -55,7 +55,7 @@ None of this is required. One session works fine on its own. This is the setup t
 
 ## Every setting, explained
 
-Open Settings from the gear on the panel's "Up next" line, or right-click the menu-bar icon.
+Open Settings from the gear on the full deck's "Up next" line, or right-click the menu-bar icon.
 
 ### Speech
 
@@ -68,7 +68,7 @@ Open Settings from the gear on the panel's "Up next" line, or right-click the me
 
 ### Playback
 
-Speed, volume and mute live on the panel itself, not in Settings: the speaker icon mutes, the slider sets volume, and the pill next to it cycles speed from 0.8× to 2×. Every reply is loudness-normalized before it plays, so 100% is normal speech level and replies match each other. All three persist across restarts.
+Speed, volume and mute live on the full deck itself, not in Settings: the speaker icon mutes, the slider sets volume, and the pill next to it cycles speed from 0.8× to 2×. Every reply is loudness-normalized before it plays, so 100% is normal speech level and replies match each other. All three persist across restarts.
 
 ### Appearance
 
@@ -78,7 +78,7 @@ Speed, volume and mute live on the panel itself, not in Settings: the speaker ic
 | **Accent colour** | The orange used throughout the app. Most of the slider sweeps through colours at a fixed saturation and brightness, so any choice keeps the same muted feel; the last stretch leaves colour behind and runs white to grey to black. Reset returns the original terracotta. |
 | **Show mini player** | **Only while speaking** appears with a reply and fades after. **Always visible** keeps a small controller on screen. Either way you can drag it anywhere and it stays there. |
 
-### Controls on the panel
+### Controls on the full deck
 
 The row above the queue, on the "Up next" line. Hovering any of them replaces the label with what it does.
 
@@ -112,7 +112,7 @@ The default is None and Newest first, a flat list with the newest reply next. Th
 
 **When several sessions run at once, switch to Session and Oldest first.** Each session's replies are a sequence: one agent lands, then another, and reply eight only makes sense if you heard reply one. Flat and newest first plays that story backwards with another project's replies dropped into the middle. Grouped by session, each session plays as one run in the order it happened, one session at a time, and a new reply extends its own session's run instead of jumping the queue.
 
-Group headers show the session name, how many replies are waiting, and the time span. The now playing card shows "2 of 6" so you know how much of a session's story is left.
+Group headers show the session name, how many replies are waiting, and the time span. The now-playing card shows "2 of 6" so you know how much of a session's story is left.
 
 ## Plain text knobs
 
@@ -128,13 +128,13 @@ The Settings window writes plain files in `~/.claude/`, so shell edits and the G
 | `speak-voice` | macOS voice name. Absent probes for the best installed one. |
 | `speak-rate` | Words per minute for macOS voices. |
 | `speak-peer` | The other Mac's Tailscale IP, so two decks take turns on one pair of AirPods. |
-| `speak-lead-in` | Seconds of silence before speech when the deck has been quiet a while, so shared AirPods finish switching to this Mac before the first word. Default 1.2. Set `0` to turn it off. |
+| `speak-lead-in` | Seconds of silence before speech when the app has been quiet a while, so shared AirPods finish switching to this Mac before the first word. Default 1.2. Set `0` to turn it off. |
 
 ## When something seems wrong
 
 Logs live in `/tmp/claude-speech/`: `hook.log` for rendering, `deck.log` for the app.
 
-- **Nothing is spoken.** Check `~/.claude/speak-off` doesn't exist, then check the panel isn't muted, then look at `hook.log`.
+- **Nothing is spoken.** Check `~/.claude/speak-off` doesn't exist, then check the full deck isn't muted, then look at `hook.log`.
 - **A reply was skipped.** Look for it in `hook.log`. Every spoken reply logs a line.
 - **It reads things you don't want.** Set Read replies back to "When Claude finishes."
 - **The voice sounds wrong or slow.** The neural voice may have fallen back to macOS voices. `hook.log` records which engine each reply used.
