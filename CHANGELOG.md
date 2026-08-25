@@ -2,6 +2,12 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.6 (2026-08-25)
+
+**Mute a single session.** With several Claude Code sessions running, one busy session can drown out the ones you care about. Hover any reply in the queue and a speaker-slash now sits between play and remove: click it and that whole terminal session goes quiet, immediately if it is the one speaking. Its replies keep arriving and stay in the list, each with a visible speaker-slash and a grey dot so it is always clear what is muted, and clicking the icon again brings the whole backlog back. Nothing is deleted: playback simply steps over muted sessions, and the count on the menu-bar icon only includes replies that will actually play.
+
+**The scroll bar no longer sits on top of the row buttons.** The queue hides its scroll indicator (scrolling itself is unchanged), and the row and header buttons are a little larger and moved in from the right edge.
+
 ## 1.2.5 (2026-08-25)
 
 **Pick your own accent colour.** The terracotta was never adjustable. Settings ▸ Appearance now has a slider that repaints the whole app, from the play button to the queue badge in the menu bar. Most of the track sweeps through colours at a fixed saturation and brightness, so any choice keeps the same muted feel, and the last stretch leaves colour behind and runs white to grey to black. Reset returns the original.

@@ -86,10 +86,15 @@ done
 V=$(cat VERSION)
 grep -q "^## $V " CHANGELOG.md || { echo "  CHANGELOG.md has no '## $V' entry"; DFAIL=$((DFAIL+1)); }
 
-# phrases describing things the app no longer does
+# Phrases describing things the app no longer does. CHANGELOG is deliberately
+# exempt: it is a dated record of what shipped when, and its old entries are
+# SUPPOSED to describe the app as it was. Rewriting them to match today would
+# destroy the thing a changelog is for (changelog discipline: corrections
+# append, never rewrite). Caught the first time this list met a 1.0.0 entry.
+CURRENT_DOCS=$(echo "$DOCS" | tr ' ' '\n' | grep -v '^CHANGELOG.md$' | tr '\n' ' ')
 while IFS='|' read -r pat why; do
   [ -z "$pat" ] && continue
-  for f in $DOCS; do
+  for f in $CURRENT_DOCS; do
     grep -qi -- "$pat" "$f" 2>/dev/null && { echo "  $f still says '$pat' ($why)"; DFAIL=$((DFAIL+1)); }
   done
 done <<'RETIRED'
@@ -103,6 +108,8 @@ Settings window or the panel|Speed/Volume/Mute left Settings in 1.2.4
 Menu bar icon|the menu-bar icon picker was removed in 1.2.4
 Frosted (classic)|panel styles became Classic/Glassy/Glassier in 1.2.5
 switch it to the classic frosted|panel styles became Classic/Glassy/Glassier in 1.2.5
+Liquid Glass or classic frosted|panel styles became Classic/Glassy/Glassier in 1.2.5
+reading panel|renamed the mini player in 1.2.5
 RETIRED
 
 # the guide has to actually cover what Adam asked it to cover

@@ -182,6 +182,14 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published var muted = false {
         didSet { UserDefaults.standard.set(muted, forKey: "muted") }
     }
+    // Per-session mute (playback-only): replies from a muted session keep
+    // queueing and rendering, they just never autoplay — every "pick the next
+    // reply" site goes through nextPlayable / hasQueued, which skip them.
+    // Unmuting brings the whole backlog back. Persists across relaunches;
+    // entries are pruned in rescan() once a session has no items left.
+    @Published var mutedSessions: Set<String> = [] {
+        didSet { UserDefaults.standard.set(Array(mutedSessions), forKey: "mutedSessions") }
+    }
     // AVAudioPlayer volume is attenuate-only (0…1); the hook loudness-normalizes
     // renders so 1.0 here matches normal speech level
     @Published var volume: Double = 1.0 {
@@ -214,6 +222,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private override init() {
         super.init()
         muted = UserDefaults.standard.bool(forKey: "muted")
+        mutedSessions = Set(UserDefaults.standard.stringArray(forKey: "mutedSessions") ?? [])
         let r = UserDefaults.standard.double(forKey: "rate")
         if rateSteps.contains(r) { rate = r }
         if UserDefaults.standard.object(forKey: "volume") != nil {
@@ -261,7 +270,30 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var history: [String] = [] { didSet { historyCount = history.count } }
 
     var current: SpeechItem? { items.first { $0.id == currentID } }
-    var hasQueued: Bool { items.contains { $0.state == .queued } }
+    // "Queued" for playback purposes excludes muted sessions everywhere: the
+    // skip button's label, the chime-then-advance, and the Now Playing claim
+    // must all agree with what autoplay will actually pick.
+    var hasQueued: Bool { items.contains { $0.state == .queued && !isSessionMuted($0) } }
+    // physical order IS play order (see resort()), minus muted sessions
+    var nextPlayable: SpeechItem? { items.first { $0.state == .queued && !isSessionMuted($0) } }
+    func isSessionMuted(_ item: SpeechItem) -> Bool { mutedSessions.contains(item.sessionId) }
+
+    func toggleSessionMute(_ item: SpeechItem) {
+        let sid = item.sessionId
+        guard !sid.isEmpty else { return }
+        if mutedSessions.contains(sid) {
+            mutedSessions.remove(sid)
+            dlog("session \(sid) unmuted")
+            maybeAutoplay()   // its backlog is playable again
+        } else {
+            mutedSessions.insert(sid)
+            dlog("session \(sid) muted")
+            // muting the session that's speaking means "stop hearing it now" —
+            // same move as skip. A reply merely paused mid-item is left alone;
+            // resuming it by hand is explicit enough to override the mute.
+            if let cur = current, cur.sessionId == sid, isPlaying { playNext() }
+        }
+    }
     // paused partway through a reply — autoplay must not steal playback
     var isPausedMidItem: Bool {
         player != nil && !isPlaying && currentID != nil && progress < max(duration - 0.3, 0)
@@ -302,6 +334,14 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
             guard item.id != currentID, !nameSet.contains(item.id + ".json") else { return false }
             dlog("pruned \(item.id) (files removed externally)")
             return true
+        }
+
+        // a mute lives as long as the session has items in the deck; once the
+        // last one is gone the entry would be dead weight in UserDefaults
+        if !mutedSessions.isEmpty {
+            let liveSids = Set(items.map(\.sessionId))
+            let stale = mutedSessions.subtracting(liveSids)
+            if !stale.isEmpty { mutedSessions.subtract(stale) }
         }
 
         let known = Set(items.map(\.id))
@@ -348,8 +388,9 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 // live session's oldest unheard reply, because the earlier
                 // ones are the context that makes the fresh one make sense.
                 if !muted, !isPlaying,
-                   items.contains(where: { $0.state == .queued && Date().timeIntervalSince($0.created) < 120 }),
-                   let head = items.first(where: { $0.state == .queued }) {
+                   items.contains(where: { $0.state == .queued && !isSessionMuted($0)
+                                           && Date().timeIntervalSince($0.created) < 120 }),
+                   let head = nextPlayable {
                     autoplayGated(head)   // cold-start autoplay also yields to the peer
                 } else {
                     dlog("initial scan: \(items.count) item(s) restored, autoplay held")
@@ -372,14 +413,14 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
             dlog("autoplay held: \(currentID ?? "?") paused mid-reply")
             // Adam chose a visual cue over auto-resume (2026-08-16): a reply
             // waiting behind a paused one ripples the HUD instead of playing.
-            if let waiting = items.first(where: { $0.state == .queued }), waiting.id != flashedHoldID {
+            if let waiting = nextPlayable, waiting.id != flashedHoldID {
                 flashedHoldID = waiting.id
                 attentionWanted = true
                 MiniHUDController.shared.summonForAttention()
             }
             return
         }
-        if let next = items.first(where: { $0.state == .queued }) { autoplayGated(next) }
+        if let next = nextPlayable { autoplayGated(next) }
     }
 
     // Automatic starts wait for the peer Mac's deck to go quiet (PeerGate);
@@ -389,8 +430,9 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         PeerGate.shared.peerBusy { [weak self] busy in
             guard let self else { return }
             guard !self.muted, !self.isPlaying, !self.isPausedMidItem else { return }
-            guard self.items.contains(where: { $0.id == item.id && $0.state == .queued }) else {
-                self.maybeAutoplay()   // that item was played/removed meanwhile — re-pick
+            guard self.items.contains(where: { $0.id == item.id && $0.state == .queued }),
+                  !self.isSessionMuted(item) else {
+                self.maybeAutoplay()   // played/removed/muted meanwhile — re-pick
                 return
             }
             guard busy else { self.play(item); return }
@@ -531,7 +573,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
             dlog("resume/replay \(currentID ?? "?")")
         } else if let cur = current {
             play(cur)   // player gone (playNext into empty queue, load failure) — reload it
-        } else if let next = items.first(where: { $0.state == .queued }) {
+        } else if let next = nextPlayable {
             play(next)
         }
     }
@@ -558,7 +600,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // double as a "make this stop" with no pause/mute side effects.
     func playNext() {
         if let id = currentID { setState(id, .done) }
-        if let next = items.first(where: { $0.state == .queued }) {
+        if let next = nextPlayable {
             play(next)
         } else {
             stopPlayer()
@@ -601,7 +643,8 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // SEQUENCE: agent 1 lands, then agent 2, and reply 8 only makes sense after
     // reply 1. So `items` is kept sorted into per-session blocks — chronological
     // inside a block, liveliest block first — and physical order IS play order,
-    // which is why every consumer can keep doing `items.first { $0.state == .queued }`.
+    // which is why every consumer can keep doing `nextPlayable` (the first
+    // queued item whose session isn't muted).
     //
     // Block order, first match wins:
     //   1. a session the user tapped "Play this session next" on (newest tap first)
@@ -1510,7 +1553,7 @@ struct DeckView: View {
         let grouping = deck.groupBy != .none
         let live = deck.items.filter { $0.state != .done }
         let played = deck.items.filter { $0.state == .done }
-        let nextUpID = live.first(where: { $0.state == .queued })?.id
+        let nextUpID = deck.nextPlayable?.id   // the bright dot skips muted sessions too
         return ScrollView {
             VStack(alignment: .leading, spacing: 2) {
                 if !live.isEmpty {
@@ -1530,6 +1573,9 @@ struct DeckView: View {
             }
             .padding(.top, 2)
         }
+        // trackpads and wheels still scroll; the overlay bar covered the
+        // row action icons on the right edge (Adam, 2026-08-25)
+        .scrollIndicators(.hidden)
         .frame(minHeight: 80, maxHeight: 280)
     }
 
@@ -1635,7 +1681,7 @@ struct GroupHeaderRow: View {
             if hover && actions {
                 Button(action: { deck.playGroupNext(block.key) }) {
                     Image(systemName: "arrow.up.to.line")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Theme.accent)
                 }
                 .buttonStyle(.plain)
@@ -1644,7 +1690,7 @@ struct GroupHeaderRow: View {
                 .accessibilityLabel("Play \(block.title) next")
                 Button(action: { deck.removeQueued(groupKey: block.key) }) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
+                        .font(.system(size: 13))
                         .foregroundStyle(theme.secondary)
                 }
                 .buttonStyle(.plain)
@@ -1654,7 +1700,8 @@ struct GroupHeaderRow: View {
             }
         }
         .padding(.vertical, 3)
-        .padding(.horizontal, 7)
+        .padding(.leading, 7)
+        .padding(.trailing, 12)   // clear of the right edge, like the rows
         .padding(.top, 4)
         .contentShape(Rectangle())
         .onHover { inside in
@@ -1715,23 +1762,28 @@ struct DeckRow: View {
             if hover {
                 Button(action: { deck.play(item) }) {
                     Image(systemName: "play.circle.fill")
-                        .font(.system(size: 12))
+                        .font(.system(size: 14))
                         .foregroundStyle(Theme.accent)
                 }
                 .buttonStyle(.plain)
                 .help("Play now")
                 .hoverHint("Play now")
+                muteButton
                 Button(action: { deck.remove(item) }) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
+                        .font(.system(size: 14))
                         .foregroundStyle(theme.secondary)
                 }
                 .buttonStyle(.plain)
                 .help("Remove")
                 .hoverHint("Remove")
+            } else if sessionMuted && item.state != .done {
+                // muted state stays visible on every unplayed row — that IS
+                // the "which sessions are muted" UI, and clicking it unmutes
+                muteButton
             }
         }
-        .padding(.trailing, 7)
+        .padding(.trailing, 12)   // clear of the right edge even with forced scroll bars
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isCurrent ? Theme.accent.opacity(0.13) : hover ? theme.hover : .clear))
@@ -1739,11 +1791,27 @@ struct DeckRow: View {
             hover = inside
             // the hover buttons vanish with the row highlight, so their
             // hint can be left stranded — clear it on the way out
-            if !inside, ["Play now", "Remove"].contains(deck.hint) {
+            if !inside, ["Play now", "Remove", "Mute this session", "Unmute this session"]
+                .contains(deck.hint) {
                 deck.hint = ""
             }
         }
         .opacity(item.state == .done && !isCurrent ? 0.42 : 1)
+    }
+
+    private var sessionMuted: Bool { deck.isSessionMuted(item) }
+
+    private var muteButton: some View {
+        Button(action: { deck.toggleSessionMute(item) }) {
+            Image(systemName: sessionMuted ? "speaker.slash.circle.fill" : "speaker.slash.circle")
+                .font(.system(size: 14))
+                .foregroundStyle(theme.secondary)
+        }
+        .buttonStyle(.plain)
+        .help(sessionMuted ? "Unmute this session" : "Mute this session")
+        .hoverHint(sessionMuted ? "Unmute this session" : "Mute this session")
+        .accessibilityLabel(sessionMuted
+            ? "Unmute session \(item.title)" : "Mute session \(item.title)")
     }
 
     @ViewBuilder private var statusIcon: some View {
@@ -1751,8 +1819,10 @@ struct DeckRow: View {
         case .playing:
             Spark(size: 12, pulse: deck.level)
         case .queued:
+            // a muted session's dot goes gray — it isn't in line to play
             Circle()
-                .fill(isNextUp ? Theme.accent : Theme.accent.opacity(0.45))
+                .fill(sessionMuted ? theme.secondary.opacity(0.5)
+                      : isNextUp ? Theme.accent : Theme.accent.opacity(0.45))
                 .frame(width: 7, height: 7)
         case .done:
             Image(systemName: "checkmark")
@@ -3812,6 +3882,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             deck.$items.map { $0.lazy.filter { $0.state == .queued }.count }
                 .removeDuplicates().map { _ in () }
         )
+        // a session mute changes the badge count without touching items
+        .merge(with: deck.$mutedSessions.removeDuplicates().map { _ in () })
         // currentID: a skip while already playing changes the reply without
         // toggling isPlaying — Now Playing needs the new title/duration
         .merge(with: deck.$currentID.removeDuplicates().map { _ in () })
@@ -3948,7 +4020,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // muted, or paused part way through a reply. The alternate speaker
         // icon set and its picker are gone (Adam, 2026-08-24) — one mark, and
         // the slash carries the state.
-        let queued = deck.items.filter { $0.state == .queued }.count
+        // the badge counts what will actually play — muted sessions' replies
+        // sit in the list but aren't "waiting", so they don't keep it lit
+        let queued = deck.items.filter { $0.state == .queued && !deck.isSessionMuted($0) }.count
         let silenced = !deck.enabled || deck.muted || deck.isPausedMidItem
         if !deck.isPlaying {
             button.image = statusImage(base: syGlyph, count: queued,
@@ -4097,7 +4171,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self.pulsePhase += 0.5
             button.alphaValue = 1.0
             let bars = self.eqGlyph(level: Deck.shared.level, phase: self.pulsePhase)
-            let waiting = Deck.shared.items.filter { $0.state == .queued }.count
+            let waiting = Deck.shared.items.filter {
+                $0.state == .queued && !Deck.shared.isSessionMuted($0) }.count
             button.image = self.statusImage(base: bars, count: waiting,
                                             silenced: false, on: button)
         }
