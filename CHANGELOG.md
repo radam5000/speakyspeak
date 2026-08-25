@@ -2,6 +2,18 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.5 (2026-08-25)
+
+**Pick your own accent colour.** The terracotta was never adjustable. Settings ▸ Appearance now has a slider that repaints the whole app, from the play button to the queue badge in the menu bar. Most of the track sweeps through colours at a fixed saturation and brightness, so any choice keeps the same muted feel, and the last stretch leaves colour behind and runs white to grey to black. Reset returns the original.
+
+**Three looks for the mini player.** Classic is a solid card that reads the same on any wallpaper. Glassy is translucent and adapts to what is behind it, and is the default. Glassier is more transparent still. All three share the same width and the same flat transport buttons now.
+
+**Settings shows you the change while you make it.** Opening Settings brings the mini player up as a live preview and keeps it there, so choosing a look or dragging the accent shows you the result on the thing itself. With that, most of the explanatory captions are gone.
+
+**The menu-bar icon holds still and says more.** A waiting queue now shows as the count over the mark rather than a number beside it, orange when those replies are going to play and grey when they are not. The icon is the same width in every state, so it never shifts under your cursor.
+
+**Smaller things.** "Reading panel" is now called the mini player. Version and Check for updates share one line, and the check confirms itself without moving the window. Reporting is one section at the bottom with two buttons side by side. Speed, volume and mute were removed from Settings, since all three are on the player itself.
+
 ## 1.2.4 (2026-08-24)
 
 **The floating panel is readable on any wallpaper.** The Frosted panel style was never actually solid: it used a translucent material, so over a dark desktop the card darkened and took the text with it. It is opaque now, and the reply preview text was measured and strengthened, so contrast no longer depends on what is behind the window.

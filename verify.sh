@@ -98,6 +98,11 @@ play earlier|per-row reorder chevrons were removed in 1.2.0
 never mid-turn noise|the as-it-works read modes shipped in 1.1.x
 Order groups|the group-order control was cut before 1.2.0 shipped
 Project or repo|grouping by project was cut before 1.2.0 shipped
+or a speaker icon|the alternate menu-bar icon set was removed in 1.2.4
+Settings window or the panel|Speed/Volume/Mute left Settings in 1.2.4
+Menu bar icon|the menu-bar icon picker was removed in 1.2.4
+Frosted (classic)|panel styles became Classic/Glassy/Glassier in 1.2.5
+switch it to the classic frosted|panel styles became Classic/Glassy/Glassier in 1.2.5
 RETIRED
 
 # the guide has to actually cover what Adam asked it to cover

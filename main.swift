@@ -37,6 +37,11 @@ func dlog(_ s: String) {
 
 // MARK: - Anthropic-flavored palette
 
+extension Notification.Name {
+    static let speakyAccentChanged = Notification.Name("speakyAccentChanged")
+    static let speakyHUDPreview = Notification.Name("speakyHUDPreview")
+}
+
 extension Color {
     init(hex: UInt32) {
         self.init(
@@ -50,8 +55,54 @@ struct Theme {
     let bg, card, cardStroke, text, secondary, track, hover: Color
     let swirlIntensity: Double
 
-    static let accent = Color(hex: 0xD97757)      // Claude terracotta
-    static let accentDeep = Color(hex: 0xBC5F3D)
+    // The accent is one slider the user drags from end to end. Most of the
+    // track is a hue sweep at fixed saturation and brightness, so every colour
+    // keeps the app's muted register instead of going fluorescent; the last
+    // fifth leaves colour behind entirely and ramps white to grey to black,
+    // for people who do not want a colour at all (Adam, 2026-08-25).
+    //
+    // Default is the Claude terracotta this shipped with: #D97757 is hue 14.8°,
+    // and #BC5F3D (the gradient's deep end) is the same hue carrying more
+    // saturation and less brightness.
+    private static let hueSpan = 0.80
+    private static let accentSat = 0.599, accentBri = 0.851
+    private static let deepSat = 0.676, deepBri = 0.737
+    static let defaultAccentTone: Double = (14.769 / 360) * hueSpan
+
+    // Cached rather than read from UserDefaults on every access: these are
+    // touched many times per animation frame. SettingsStore writes it on change.
+    static var accentTone: Double = {
+        let d = UserDefaults.standard
+        if let t = d.object(forKey: "accentTone") as? Double { return min(max(0, t), 1) }
+        // pre-neutrals the slider WAS the hue; fold an old pick onto the new
+        // track so nobody's chosen colour silently changes underneath them
+        if let h = d.object(forKey: "accentHue") as? Double { return min(max(0, h), 1) * hueSpan }
+        return defaultAccentTone
+    }()
+
+    private static func hsb(_ t: Double, deep: Bool) -> (h: Double, s: Double, b: Double) {
+        if t < hueSpan {
+            return (t / hueSpan, deep ? deepSat : accentSat, deep ? deepBri : accentBri)
+        }
+        // neutral tail: white at the seam, black at the far end
+        let u = min(max(0, (t - hueSpan) / (1 - hueSpan)), 1)
+        let bri = 1 - u
+        return (0, 0, deep ? max(0, bri - 0.12) : bri)
+    }
+
+    static var accent: Color {
+        let c = hsb(accentTone, deep: false)
+        return Color(hue: c.h, saturation: c.s, brightness: c.b)
+    }
+    static var accentDeep: Color {
+        let c = hsb(accentTone, deep: true)
+        return Color(hue: c.h, saturation: c.s, brightness: c.b)
+    }
+    // for AppKit surfaces (the menu-bar badge), which cannot take a SwiftUI Color
+    static var accentNS: NSColor {
+        let c = hsb(accentTone, deep: false)
+        return NSColor(hue: c.h, saturation: c.s, brightness: c.b, alpha: 1)
+    }
 
     static func of(_ scheme: ColorScheme) -> Theme {
         scheme == .dark
@@ -1157,6 +1208,10 @@ func fmtRate(_ r: Double) -> String {
 struct DeckView: View {
     @ObservedObject var deck = Deck.shared
     @ObservedObject private var updater = Updater.shared
+    // observed for the accent hue: this view reads Theme.accent in a dozen
+    // places and would otherwise keep the old colour until something else
+    // happened to redraw it
+    @ObservedObject private var settings = SettingsStore.shared
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -2354,8 +2409,22 @@ extension View {
     func hudSurface(_ style: HUDStyle, cornerRadius r: CGFloat,
                     fill: Color, stroke: Color) -> some View {
         let shape = RoundedRectangle(cornerRadius: r, style: .continuous)
-        if #available(macOS 26, *), style == .liquidGlass {
-            self.glassEffect(.clear, in: shape)
+        if #available(macOS 26, *), style == .glassier {
+            // .clear has NO adaptive behavior, so per Apple's guidance it gets
+            // the dimming layer it requires. The scrim is the theme's own card
+            // colour, not black: it has to lighten a light backdrop and darken
+            // a dark one, because the panel's text follows the appearance.
+            self.background(shape.fill(fill.opacity(0.34)))
+                .glassEffect(.clear, in: shape)
+        } else if #available(macOS 26, *), style == .glassy {
+            // .regular, not .clear. Apple's guidance: regular shifts its tint
+            // and dynamic range to keep labels legible whatever is behind it,
+            // while clear has NO adaptive behavior and needs an explicit
+            // dimming layer under it — which this panel never had, which is
+            // why glass legibility depended on the wallpaper. (Adam picked
+            // glass as the shipped default 2026-08-24, so it has to hold up
+            // on any desktop.)
+            self.glassEffect(.regular, in: shape)
         } else {
             // No SwiftUI shadow here: the panel sets hasShadow = true, and now
             // that the card is opaque the window shadow has a crisp shape to
@@ -2388,9 +2457,12 @@ struct MiniDeckView: View {
 
     var body: some View {
         let theme = Theme.of(scheme)
-        let glass = settings.hudStyle == .liquidGlass && HUDStyle.glassAvailable
-        // glass keys need a touch more room than the flat icons
-        let cardW: CGFloat = glass ? 296 : 264
+        let glass = settings.hudStyle.isGlass && HUDStyle.glassAvailable
+        // One width for every style (Adam, 2026-08-25). The glass variants
+        // used to take 296 because their transport keys carry their own glass
+        // and wanted more room, but a panel that changes size when you change
+        // its skin is the odd thing, and he picked Classic's width.
+        let cardW: CGFloat = 264
         VStack(spacing: 8) {
             HStack(spacing: 7) {
                 Spark(size: 12, pulse: deck.isPlaying ? deck.level : 0)
@@ -2446,7 +2518,7 @@ struct MiniDeckView: View {
                     .opacity(noBack ? 0.3 : 1)
                 Spacer(minLength: 4)
                 // center cluster: nudge back / play-pause / nudge forward
-                HStack(spacing: glass ? 8 : 14) {
+                HStack(spacing: 14) {
                     miniButton("gobackward.10", theme, glass: glass) { deck.skip(-10) }
                     Button(action: { deck.togglePlay() }) {
                         ZStack {
@@ -2569,24 +2641,25 @@ struct MiniDeckView: View {
     // Glass mode → a real Liquid Glass circular control whose symbol contrast the
     // system adapts to whatever's behind the panel. Frosted mode → the flat icon.
     @ViewBuilder
+    // One transport for every style: bare glyphs, no key behind them. The
+    // glass styles used to give each button its own .glass circle, and Adam
+    // preferred Classic's flat icons everywhere (2026-08-25). Only the colour
+    // still branches — over glass the system's .primary adapts to the material
+    // while the flat palette's text colour does not.
+    //
+    // This is also what makes one panel width honest: those glass keys were
+    // the reason the glass panels claimed 296 against Classic's 264.
     private func miniButton(_ symbol: String, _ theme: Theme, glass: Bool, action: @escaping () -> Void) -> some View {
-        let icon = Image(systemName: symbol).font(.system(size: 13, weight: .semibold))
-        if #available(macOS 26, *), glass {
-            Button(action: action) {
-                icon.frame(width: 26, height: 26).contentShape(Rectangle())
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .controlSize(.small)
-            .help(Self.hint(for: symbol))
-        } else {
-            Button(action: action) {
-                icon.foregroundStyle(theme.text.opacity(0.75))
-                    .frame(width: 28, height: 28).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(Self.hint(for: symbol))
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(glass ? AnyShapeStyle(Color.primary.opacity(0.75))
+                                       : AnyShapeStyle(theme.text.opacity(0.75)))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .help(Self.hint(for: symbol))
     }
 
     private static func hint(for symbol: String) -> String {
@@ -2871,16 +2944,26 @@ enum SpeechEngine: String, CaseIterable, Identifiable {
     }
 }
 
-// Mini-HUD surface: Apple Liquid Glass (macOS 26+) or the classic frosted card.
-// Liquid Glass is gorgeous but its contrast is backdrop-dependent, so the frosted
-// card stays available as a reliably-legible fallback the user can switch to.
+// Mini-HUD surface: three looks, all selectable (Adam, 2026-08-25). Both glass
+// variants need macOS 26; below that only Classic exists and the picker says so.
 enum HUDStyle: String, CaseIterable, Identifiable {
-    case liquidGlass, frosted
+    // Classic is the opaque card. Glassy is Apple's .regular glass, which
+    // shifts tint and dynamic range to stay legible over anything. Glassier is
+    // .clear, permanently more transparent with no adaptive behavior, so it
+    // carries the dimming layer Apple's guidance says clear requires.
+    case classic, glassy, glassier
     var id: String { rawValue }
-    var label: String { self == .liquidGlass ? "Liquid Glass" : "Frosted (classic)" }
+    var label: String {
+        switch self {
+        case .classic:  return "Classic"
+        case .glassy:   return "Glassy"
+        case .glassier: return "Glassier"
+        }
+    }
+    var isGlass: Bool { self != .classic }
     // Liquid Glass only exists on macOS 26+; below that we always render frosted.
     static var glassAvailable: Bool { if #available(macOS 26, *) { true } else { false } }
-    static var defaultStyle: HUDStyle { glassAvailable ? .liquidGlass : .frosted }
+    static var defaultStyle: HUDStyle { glassAvailable ? .glassy : .classic }
 }
 
 // When the mini HUD appears: only while a reply is speaking (auto-hide after,
@@ -2941,7 +3024,18 @@ final class SettingsStore: ObservableObject {
     // "end" is the hook's default too, so write nothing for it — an absent file
     // and the string "end" must stay interchangeable (speak-reply.sh line ~79).
     @Published var speakWhen: SpeakWhen = .end     { didSet { guard !loading else { return }; writeOrRemove("speak-when", speakWhen == .end ? "" : speakWhen.rawValue) } }
-    @Published var hudStyle: HUDStyle = .liquidGlass { didSet { guard !loading else { return }; UserDefaults.standard.set(hudStyle.rawValue, forKey: "hudStyle") } }
+    // Changing this repaints the whole app: Theme.accent reads the cached
+    // value, and every view that observes SettingsStore redraws. The menu-bar
+    // icon is AppKit and redraws through the notification below.
+    @Published var accentTone: Double = Theme.accentTone {
+        didSet {
+            guard !loading else { return }
+            Theme.accentTone = accentTone
+            UserDefaults.standard.set(accentTone, forKey: "accentTone")
+            NotificationCenter.default.post(name: .speakyAccentChanged, object: nil)
+        }
+    }
+    @Published var hudStyle: HUDStyle = .glassy { didSet { guard !loading else { return }; UserDefaults.standard.set(hudStyle.rawValue, forKey: "hudStyle") } }
     @Published var hudVisibility: HUDVisibility = .whileSpeaking { didSet { guard !loading else { return }; UserDefaults.standard.set(hudVisibility.rawValue, forKey: "hudVisibility") } }
 
     let kokoroInstalled: Bool
@@ -2967,7 +3061,13 @@ final class SettingsStore: ObservableObject {
             let v = SettingsStore.loadSayVoices()
             DispatchQueue.main.async { self?.sayVoices = v }
         }
-        hudStyle = UserDefaults.standard.string(forKey: "hudStyle").flatMap(HUDStyle.init) ?? HUDStyle.defaultStyle
+        accentTone = Theme.accentTone
+        // migrate the pre-2026-08-25 two-value setting rather than silently
+        // resetting anyone who had deliberately chosen the solid card
+        let storedHUD = UserDefaults.standard.string(forKey: "hudStyle") ?? ""
+        hudStyle = HUDStyle(rawValue: storedHUD)
+            ?? (storedHUD == "frosted" ? .classic
+                : storedHUD == "liquidGlass" ? .glassy : HUDStyle.defaultStyle)
         hudVisibility = UserDefaults.standard.string(forKey: "hudVisibility").flatMap(HUDVisibility.init) ?? .whileSpeaking
         reload()
     }
@@ -3326,6 +3426,20 @@ struct SettingsView: View {
     @ObservedObject var updater = Updater.shared
     // Inline "Copied." confirmation on the Claude-prompt button; clears itself.
     @State private var promptCopied = false
+    // "Up to date ✓" after an explicit check. Drawn as an OVERLAY above the
+    // button, not as a row beneath it: a new row grew the window and made the
+    // whole panel jump, which is what Adam objected to (2026-08-25).
+    @State private var upToDate = false
+
+    private var versionLabel: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("SpeakySpeak \(updater.localVersion)")
+            if let from = updater.justUpdatedFrom {
+                Text("updated from \(from) ✓")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
 
     var body: some View {
         Form {
@@ -3364,9 +3478,6 @@ struct SettingsView: View {
                 Picker("Read replies", selection: $settings.speakWhen) {
                     ForEach(SpeakWhen.allCases) { Text($0.label).tag($0) }
                 }
-                Text(settings.speakWhen.help)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             // Speed, Volume and Mute used to have a Playback section here.
             // They are all on the deck's own panel, a click away, so a second
@@ -3374,36 +3485,67 @@ struct SettingsView: View {
             // (Adam, 2026-08-24). Settings now holds only what the panel
             // cannot express.
             Section("Appearance") {
-                Picker("Reading panel", selection: $settings.hudStyle) {
+                Picker("Mini player", selection: $settings.hudStyle) {
                     ForEach(HUDStyle.allCases) { Text($0.label).tag($0) }
                 }
                 .disabled(!HUDStyle.glassAvailable)
+                // No explainer here: the mini player is on screen while
+                // Settings is open, so picking a style shows you the style.
                 if !HUDStyle.glassAvailable {
-                    Text("Liquid Glass needs macOS 26 or later.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text("Liquid Glass is translucent. Frosted is a solid card that stays legible on any wallpaper.")
+                    Text("Glassy and Glassier need macOS 26 or later.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Picker("Show reading panel", selection: $settings.hudVisibility) {
+                // Hue only: saturation and brightness are fixed, so every
+                // choice keeps the app's muted register rather than going
+                // fluorescent. The swatch is the live colour; Reset returns
+                // the terracotta this shipped with.
+                LabeledContent("Accent colour") {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(Theme.accent)
+                            .overlay(Circle().strokeBorder(.black.opacity(0.12)))
+                            .frame(width: 16, height: 16)
+                        Slider(value: $settings.accentTone, in: 0...1)
+                        Button("Reset") { settings.accentTone = Theme.defaultAccentTone }
+                            .disabled(abs(settings.accentTone - Theme.defaultAccentTone) < 0.001)
+                    }
+                }
+                Picker("Show mini player", selection: $settings.hudVisibility) {
                     ForEach(HUDVisibility.allCases) { Text($0.label).tag($0) }
                 }
-                Text("“Always visible” keeps the panel on screen as a controller. Otherwise it appears only while a reply is speaking.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             // Version, updating and reporting a problem all live here: the
             // status-item menu used to carry them and grew too tall to fit on
             // short screens (2026-08-17). This is the only place an update is
             // started; the popover and the menu bar just point at it.
             Section("About") {
-                LabeledContent("Version") {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("SpeakySpeak \(updater.localVersion)")
-                        if let from = updater.justUpdatedFrom {
-                            Text("updated from \(from) ✓")
-                                .font(.caption).foregroundStyle(.secondary)
+                // Version and the check button share one line, and nothing
+                // announces the daily check (Adam, 2026-08-25). The check's
+                // RESULT still appears, but only after someone presses the
+                // button — otherwise pressing it would look like nothing
+                // happened once the label stops saying "Checking…".
+                if updater.availableVersion == nil {
+                    LabeledContent {
+                        Button(updater.checking ? "Checking…" : "Check for updates") {
+                            Updater.shared.checkNow()
                         }
+                        .disabled(updater.checking)
+                        .overlay(alignment: .top) {
+                            if upToDate {
+                                Label("Up to date", systemImage: "checkmark.circle.fill")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.green)
+                                    .fixedSize()
+                                    .offset(y: -15)
+                                    .allowsHitTesting(false)
+                                    .transition(.opacity)
+                            }
+                        }
+                    } label: {
+                        versionLabel
                     }
+                } else {
+                    versionLabel
                 }
                 if let v = updater.availableVersion {
                     // The update runs for ~a minute; every state is visible
@@ -3428,30 +3570,22 @@ struct SettingsView: View {
                         Text("Pulls the latest, rebuilds, and relaunches in about a minute.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                } else {
-                    LabeledContent {
-                        Button(updater.checking ? "Checking…" : "Check for updates") {
-                            Updater.shared.checkNow()
-                        }
-                        .disabled(updater.checking)
-                    } label: {
-                        Text(updater.checkResult ?? "Checked automatically once a day.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
                 }
-                // Reporting stays in About rather than earning its own
-                // section: three sections is the whole window (Adam,
-                // 2026-08-24). Both buttons use the same caption-left /
-                // control-right shape as every other row, including Check for
-                // updates directly above.
-                LabeledContent {
-                    Button("Email a report…") { Feedback.openMailReport() }
-                } label: {
-                    Text("Opens a draft to \(Feedback.address) with your version, engine and recent log lines filled in.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                LabeledContent {
-                    Button("Have Claude write it") {
+            }
+            // Its own section at the bottom (Adam, 2026-08-25), with the two
+            // buttons side by side across the width and one caption covering
+            // both: the choice is who writes it, not which button does what.
+            Section("Report an issue") {
+                Text(promptCopied
+                     ? "Copied. Paste it into Claude Code."
+                     : "Write it yourself, or get a prompt to paste to your Claude so it writes the report for you.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Button("Email draft") { Feedback.openMailReport() }
+                        .frame(maxWidth: .infinity)
+                        .help("Opens a draft to \(Feedback.address) with version, engine, and a log entry")
+                    Button("Claude draft") {
                         Feedback.copyClaudePrompt()
                         promptCopied = true
                         // Self-clearing: the Settings window is reused for the
@@ -3459,16 +3593,23 @@ struct SettingsView: View {
                         // reset this the next time it opens.
                         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { promptCopied = false }
                     }
-                } label: {
-                    Text(promptCopied ? "Copied. Paste it into Claude Code."
-                                      : "Copies a prompt so your Claude Code gathers the logs and drafts the mail for you.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .help("Copies a prompt for your Claude Code to gather the logs and write the report")
                 }
             }
         }
         .formStyle(.grouped)
         .frame(width: 400)
         .onAppear { settings.reload() }
+        // fires when a check finishes; only meaningful when it found nothing,
+        // since finding something swaps the row for the update controls
+        .onChange(of: updater.checking) { was, now in
+            guard was, !now, updater.availableVersion == nil else { return }
+            withAnimation { upToDate = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                withAnimation { upToDate = false }
+            }
+        }
         // picking a different voice mid-audition hops the sample to it;
         // switching engines just stops (the voice list changes wholesale)
         .onChange(of: settings.kokoroVoice) { _, _ in previewer.voiceChanged() }
@@ -3523,7 +3664,13 @@ final class SettingsWindowController: NSWindowController {
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    // Open Settings and the mini player comes up as a live preview, so a
+    // change of style or accent is visible on the thing it changes rather than
+    // described in a caption (Adam, 2026-08-25).
+    var isOpen: Bool { window?.isVisible ?? false }
+
     private func windowClosed() {
+        NotificationCenter.default.post(name: .speakyHUDPreview, object: nil)
         let s = SettingsStore.shared
         if s.usingKokoro, s.kokoroVoice != voiceAtOpen {
             Deck.shared.reRenderQueued(voice: s.kokoroVoice)
@@ -3539,6 +3686,7 @@ final class SettingsWindowController: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: .speakyHUDPreview, object: nil)
     }
 }
 
@@ -3549,36 +3697,6 @@ final class SettingsWindowController: NSWindowController {
 // this size, so the strokes get a clean morphological dilation (~0.75% of
 // glyph height); and the glyph is centered in a full-bar-height canvas at 64%
 // so there's padding top and bottom (it was clipping at the top before).
-// The mark with a diagonal stroke through it, the way SF Symbols' .slash
-// variants read: one glance says nothing is coming out. Drawn rather than
-// swapped for a speaker symbol so the brand mark stays the menu-bar identity
-// in every state. The transparent channel under the stroke is what keeps the
-// slash legible where it crosses the mark's own strokes.
-func makeSlashedGlyph(_ base: NSImage) -> NSImage {
-    let size = base.size
-    let img = NSImage(size: size)
-    img.lockFocus()
-    base.draw(in: NSRect(origin: .zero, size: size))
-    let inset: CGFloat = 1
-    let from = NSPoint(x: inset, y: inset)
-    let to = NSPoint(x: size.width - inset, y: size.height - inset)
-    let line = NSBezierPath()
-    line.move(to: from)
-    line.line(to: to)
-    line.lineCapStyle = .round
-    NSColor.black.setStroke()
-    // knock a gap out first, then lay the stroke inside it
-    NSGraphicsContext.current?.compositingOperation = .clear
-    line.lineWidth = 3.4
-    line.stroke()
-    NSGraphicsContext.current?.compositingOperation = .sourceOver
-    line.lineWidth = 1.6
-    line.stroke()
-    img.unlockFocus()
-    img.isTemplate = true
-    return img
-}
-
 func makeSyGlyph() -> NSImage {
     let barH = NSStatusBar.system.thickness
     let glyphH = barH * 0.64
@@ -3637,7 +3755,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var pulsePhase: CGFloat = 0
     private var bag = Set<AnyCancellable>()
     private lazy var syGlyph = makeSyGlyph()
-    private lazy var slashedSyGlyph = makeSlashedGlyph(makeSyGlyph())
     private var quietHotKey: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -3650,6 +3767,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         host.sizingOptions = [.preferredContentSize]   // popover tracks the deck's size
         popover.contentViewController = host
 
+        NotificationCenter.default.addObserver(
+            forName: .speakyAccentChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.refreshStatus()
+        }
+        NotificationCenter.default.addObserver(
+            forName: .speakyHUDPreview, object: nil, queue: .main) { [weak self] _ in
+            self?.updateHUD()
+        }
+        // the icon is no longer a template, so nothing re-tints it for us
+        DistributedNotificationCenter.default.addObserver(
+            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil, queue: .main) { [weak self] _ in self?.refreshStatus() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             // The count sits BEFORE the icon, which is not a style choice.
@@ -3742,7 +3871,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let d = Deck.shared
         // "Always visible" keeps the panel up as a persistent controller; either
         // way the full-deck popover suppresses it so they don't stack.
-        let always = SettingsStore.shared.hudVisibility == .always && !popover.isShown
+        // Settings open counts as "always": the panel is the preview for the
+        // Appearance controls, and it must not fade out mid-adjustment.
+        let previewing = SettingsWindowController.shared.isOpen
+        let always = (SettingsStore.shared.hudVisibility == .always || previewing) && !popover.isShown
         let desired = !popover.isShown &&
             (always || d.isPlaying || d.isPausedMidItem || (MiniHUDController.shared.isVisible && d.hasQueued))
         MiniHUDController.shared.setDesiredVisible(desired, always: always, currentID: d.currentID, anchor: statusItem?.button)
@@ -3816,14 +3948,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // muted, or paused part way through a reply. The alternate speaker
         // icon set and its picker are gone (Adam, 2026-08-24) — one mark, and
         // the slash carries the state.
+        let queued = deck.items.filter { $0.state == .queued }.count
+        let silenced = !deck.enabled || deck.muted || deck.isPausedMidItem
         if !deck.isPlaying {
-            button.image = (!deck.enabled || deck.muted || deck.isPausedMidItem)
-                ? slashedSyGlyph : syGlyph
+            button.image = statusImage(base: syGlyph, count: queued,
+                                       silenced: silenced, on: button)
         }
 
-        let queued = deck.items.filter { $0.state == .queued }.count
         var parts: [String] = []
-        if queued > 0 { parts.append("\(queued)") }
         var tip = stateTooltip(deck, queued: queued)
         // A waiting update gets a persistent ↑ next to the icon, so it's
         // visible without opening the menu; the tooltip says what to do.
@@ -3831,8 +3963,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             parts.append("↑")
             tip += "\nUpdate to \(v) available. Open Settings to install it."
         }
-        // trailing space, not leading: the title is drawn to the LEFT of the
-        // icon now (see imagePosition above)
+        // The queue count is drawn INTO the icon now, so the title carries
+        // only the rare update arrow. Trailing space, not leading: the title
+        // is drawn to the LEFT of the icon (see imagePosition above).
         button.title = parts.isEmpty ? "" : parts.joined(separator: " ") + " "
         button.toolTip = tip
 
@@ -3845,6 +3978,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // dimmed slash just reads as a smudge in a busy menu bar.
             button.alphaValue = 1.0
         }
+    }
+
+    // The menu-bar icon, composed here rather than assembled out of a template
+    // image plus a text title.
+    //
+    // Adam, 2026-08-25: a pile-up of chats put a bare number beside the mark
+    // and it read as clutter. So a waiting queue now shows as the COUNT over
+    // the mark, with the mark faded back to a backdrop — the number is the
+    // information, the Sy is just where it lives. Orange when those replies
+    // are going to play, grey when they are not, and the slash still means
+    // silenced. The badge draws INSIDE the glyph's own bounds, so the item's
+    // width never changes with the count at all, which retires the last of
+    // the icon-drifting problem from 1.2.2.
+    //
+    // This image is NOT a template — a template is one tint by definition and
+    // this needs two. That means tinting the mark by hand, so it is drawn
+    // inside the button's own effective appearance and NSColor.labelColor
+    // resolves to whatever the menu bar actually is. AppleInterfaceThemeChanged
+    // re-renders it (see start()).
+    private func statusImage(base: NSImage, count: Int, silenced: Bool,
+                             on button: NSStatusBarButton) -> NSImage {
+        let size = base.size
+        let rect = NSRect(origin: .zero, size: size)
+        let img = NSImage(size: size)
+        img.lockFocus()
+        button.effectiveAppearance.performAsCurrentDrawingAppearance {
+            // the mark: drawn for its alpha, then recoloured through it
+            // fainter still when a count AND a slash are both on top of it,
+            // or the mark, the number and the stroke are three greys competing
+            base.draw(in: rect, from: .zero, operation: .sourceOver,
+                      fraction: count > 0 ? (silenced ? 0.16 : 0.28) : 1.0)
+            NSColor.labelColor.set()
+            rect.fill(using: .sourceAtop)
+
+            if count > 0 {
+                let text = count > 99 ? "99+" : "\(count)"
+                // shrink to fit rather than spill past the mark's width
+                var pt: CGFloat = text.count >= 3 ? 9 : 11
+                var str = NSAttributedString(string: text, attributes: badgeAttrs(pt, silenced))
+                while str.size().width > size.width - 1, pt > 6 {
+                    pt -= 0.5
+                    str = NSAttributedString(string: text, attributes: badgeAttrs(pt, silenced))
+                }
+                let b = str.size()
+                str.draw(at: NSPoint(x: (size.width - b.width) / 2,
+                                     y: (size.height - b.height) / 2))
+            }
+            if silenced {
+                let inset: CGFloat = 1
+                let line = NSBezierPath()
+                line.move(to: NSPoint(x: inset, y: inset))
+                line.line(to: NSPoint(x: size.width - inset, y: size.height - inset))
+                line.lineCapStyle = .round
+                NSColor.labelColor.setStroke()
+                // clear a channel first so the stroke reads over mark and number alike
+                NSGraphicsContext.current?.compositingOperation = .clear
+                line.lineWidth = 3.4
+                line.stroke()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+                line.lineWidth = 1.6
+                line.stroke()
+            }
+        }
+        img.unlockFocus()
+        img.isTemplate = false
+        return img
+    }
+
+    // Orange means these replies are going to play. Grey means they are piling
+    // up and nothing is going to say them.
+    private func badgeAttrs(_ pt: CGFloat, _ silenced: Bool) -> [NSAttributedString.Key: Any] {
+        [.font: NSFont.systemFont(ofSize: pt, weight: .bold),
+         .foregroundColor: silenced ? NSColor.secondaryLabelColor : Theme.accentNS]
     }
 
     private func stateTooltip(_ deck: Deck, queued: Int) -> String {
@@ -3890,7 +4096,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             guard let self, let button = self.statusItem?.button else { return }
             self.pulsePhase += 0.5
             button.alphaValue = 1.0
-            button.image = self.eqGlyph(level: Deck.shared.level, phase: self.pulsePhase)
+            let bars = self.eqGlyph(level: Deck.shared.level, phase: self.pulsePhase)
+            let waiting = Deck.shared.items.filter { $0.state == .queued }.count
+            button.image = self.statusImage(base: bars, count: waiting,
+                                            silenced: false, on: button)
         }
     }
 

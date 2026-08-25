@@ -4,3 +4,4 @@ design-refs/
 __pycache__/
 *.pyc
 .playwright-mcp/
+.vercel
