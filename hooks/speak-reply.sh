@@ -1,7 +1,8 @@
 #!/bin/bash
 # Stop hook: render Claude's final reply to audio and enqueue it for
-# SpeakySpeak (~/.claude/tools/speakyspeak), which plays items one at
-# a time in arrival order — no overlapping sessions.
+# SpeakySpeak (~/Applications/SpeakySpeak.app), which plays items one at
+# a time — no overlapping sessions. Play order is the app's business
+# (flat or grouped by session); this script only produces queue items.
 # SPEAKYSPEAK_SPEECH_ROOT exists for the fixture tests in tests/ (isolated
 # queue, no interference with a live deck watching /tmp/claude-speech).
 # Production never sets it; the app hard-codes /tmp/claude-speech.
@@ -47,10 +48,17 @@ if [ -z "$ENGINE" ]; then
   if [ -x "$KOKORO_BIN" ]; then ENGINE=kokoro; else ENGINE=say; fi
 fi
 
-# Released on exit by both traps in this script (see the afplay fallback at the
-# bottom, which sets its own EXIT trap and would otherwise replace this one).
+# Released on exit by the EXIT traps in this script. There is only ever ONE
+# active trap; every `trap` call in this file must route through cleanup_all
+# (the afplay fallback replaces the trap and does), or a lock leaks.
 MIDLOCK=""
+CLAIMDIR=""
 cleanup_midlock() { [ -n "$MIDLOCK" ] && rmdir "$MIDLOCK" 2>/dev/null; return 0; }
+cleanup_all() {
+  [ -n "$CLAIMDIR" ] && rmdir "$CLAIMDIR" 2>/dev/null
+  cleanup_midlock
+  return 0
+}
 
 input=$(cat)
 
@@ -102,7 +110,7 @@ fi
 { [ -z "$title" ] || [ "$title" = "null" ]; } && title="$proj"
 
 mkdir -p "$QUEUE"
-find "$SPEECH_ROOT" \( -name '*.m4a' -o -name '*.json' -o -name '*.end' -o -name '*.done' -o -name '.seen-*' \) -mtime +2 -delete 2>/dev/null
+find "$SPEECH_ROOT" \( -name '*.m4a' -o -name '*.json' -o -name '*.end' -o -name '*.done' -o -name '.seen-*' -o -name '.claim-*' \) -mtime +2 -delete 2>/dev/null
 
 # Returns "<uuid>\t<timestamp>\t<text>" — but ONLY when the last assistant
 # entry in the file is a text entry. Mid-turn preambles ("Quick check on X
@@ -111,6 +119,10 @@ find "$SPEECH_ROOT" \( -name '*.m4a' -o -name '*.json' -o -name '*.end' -o -name
 # entry is a tool_use/thinking entry and this returns "", which keeps the
 # poll loop below waiting. Sidechain (subagent) entries are excluded so a
 # background agent finishing after Stop isn't spoken as the reply.
+# NOTE: the array filter below is load-bearing for the GATE. If a transcript
+# format ever carries assistant text as a plain string, that entry becomes
+# invisible here and an OLDER entry reads as "last" — a gate-widening failure.
+# Censused 2026-08-25: 100% of assistant entries are arrays today.
 extract() {
   jq -rs '
     [.[] | select(.type == "assistant" and ((.isSidechain // false) | not)
@@ -154,6 +166,7 @@ gather_turn() {
   jq -rs --arg seen "$last_seen" '
     def realuser: .type == "user"
       and ((.isMeta // false) | not)
+      and ((.origin.kind // "human") != "task-notification")
       and ((.message.content | type) == "string"
            or ([.message.content[]? | select(.type == "tool_result")] | length) == 0);
     [.[] | select(((.isSidechain // false) | not)
@@ -191,6 +204,7 @@ gather_midturn() {
   jq -rs --arg seen "$last_seen" --argjson minw "$MINWORDS" '
     def realuser: .type == "user"
       and ((.isMeta // false) | not)
+      and ((.origin.kind // "human") != "task-notification")
       and ((.message.content | type) == "string"
            or ([.message.content[]? | select(.type == "tool_result")] | length) == 0);
     def istool: ((.message.content | type) == "array")
@@ -248,7 +262,7 @@ if [ "$event" != "Stop" ]; then
     [ $(( $(date +%s) - lmt )) -gt 600 ] && rmdir "$MIDLOCK" 2>/dev/null
   fi
   mkdir "$MIDLOCK" 2>/dev/null || exit 0
-  trap cleanup_midlock EXIT
+  trap cleanup_all EXIT
   out=$(gather_midturn)
   [ -n "$out" ] || exit 0
   uuid=${out%%$'\t'*}
@@ -284,6 +298,12 @@ for _ in $(seq 1 60); do
       # caught mid-flush — accept only if still last after a beat
       sleep 0.5
       [ "$(extract)" != "$out" ] && continue
+      # re-read .seen NOW: it was snapshotted before a poll loop that can run
+      # 30s, and a mid-turn hook may have spoken (and marked) text in that
+      # window — gathering against the stale snapshot re-spoke it (2026-08-25
+      # audit, reproduced). Must happen BEFORE the overwrite on the next line,
+      # or the boundary would become this entry's own uuid and gather nothing.
+      last_seen=$(cat "$SEEN" 2>/dev/null || echo "")
       text=$body
       printf '%s' "$uuid" > "$SEEN"
       break
@@ -335,8 +355,19 @@ clean=$(printf '%s' "$text" \
   | sed -E 's/^[[:space:]]*[-+][[:space:]]+/ /' \
   | sed -E 's/[[:space:]]+/ /g; s/ +([.,;:!?])/\1/g; s/^ +//; s/ +$//')
 
-# one-line preview for the deck's list (project + opening words)
-preview=$(printf '%s' "$clean" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ +//' | cut -c1-120)
+# A reply that was entirely fenced code cleans down to nothing; real `say`
+# happily renders empty stdin into a 28-byte silent m4a, which queued a
+# playable empty row (reproduced 2026-08-25). .seen stays advanced: skipping
+# an unspeakable reply is a decision, not a failure.
+case $clean in
+  *[![:space:]]*) ;;
+  *) echo "--- $(date) $sid nothing speakable after cleaning" >> "$LOG"; exit 0 ;;
+esac
+
+# one-line preview for the deck's list (project + opening words); truncation
+# happens codepoint-aware in the jq below — BSD `cut -c` counts bytes and
+# split multi-byte characters into a trailing U+FFFD
+preview=$(printf '%s' "$clean" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ +//')
 
 # The id doubles as the filename, and `date +%s` only has 1-second
 # resolution, so two replies from ONE session inside the same second used to
@@ -347,11 +378,19 @@ preview=$(printf '%s' "$clean" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ +
 # (diagnosed 2026-08-23). Walking the stamp forward keeps the documented
 # <epoch>-<sid> queue contract intact and keeps ids monotonic; `created`
 # moves with it, which is what the deck should show anyway.
+# The probe alone is a TOCTOU: while a render is in flight the files are still
+# named .tmp-*, so a second hook in the same second saw an empty slot and both
+# wrote the same final path (reproduced 2026-08-25: a PostToolUse and a Stop
+# 0.05s apart destroyed the mid-turn reply, both logging success on one id).
+# mkdir is the atomic claim; the EXIT trap and the 2-day sweep free it.
 stamp=$(date +%s)
-while [ -e "$QUEUE/${stamp}-${sid}.json" ] || [ -e "$QUEUE/${stamp}-${sid}.m4a" ]; do
+while [ -e "$QUEUE/${stamp}-${sid}.json" ] || [ -e "$QUEUE/${stamp}-${sid}.m4a" ] \
+   || ! mkdir "$QUEUE/.claim-${stamp}-${sid}" 2>/dev/null; do
   stamp=$((stamp + 1))
 done
 id="${stamp}-${sid}"
+CLAIMDIR="$QUEUE/.claim-$id"
+trap cleanup_all EXIT
 
 # wake the deck before rendering so it's already watching when the audio
 # lands — a cold start mid-render used to miss fresh arrivals
@@ -433,6 +472,12 @@ if [ "$rendered" != 1 ]; then
   if ! printf '%s' "$clean" | say "${VOICEARGS[@]}" "${RATEARGS[@]}" -o "$QUEUE/.tmp-$id.m4a" --data-format=aac; then
     echo "--- $(date) $sid say render failed" >> "$LOG"
     rm -f "$QUEUE/.tmp-$id.m4a"
+    # roll .seen back to what it was when this hook gated (only if no later
+    # hook has advanced it), so a transient TTS failure does not permanently
+    # consume the reply — the stated .seen design is "advances when text is
+    # actually spoken". The success path still writes .seen at gate time,
+    # which is what keeps concurrent gathers from double-speaking.
+    [ "$(cat "$SEEN" 2>/dev/null)" = "$uuid" ] && printf '%s' "$last_seen" > "$SEEN"
     exit 0
   fi
 fi
@@ -447,10 +492,19 @@ mv "$QUEUE/.tmp-$id.m4a" "$QUEUE/$id.m4a"
 
 # full cleaned text rides along so the app can re-render queued items when a
 # new voice is picked (older manifests without it just keep their audio)
-jq -n --arg session "$sid" --arg project "$proj" --arg title "$title" --arg preview "$preview" --arg text "$clean" --argjson created "$stamp" \
-  '{session: $session, project: $project, title: $title, preview: $preview, text: $text, created: $created}' \
-  > "$QUEUE/.tmp-$id.json"
-mv "$QUEUE/.tmp-$id.json" "$QUEUE/$id.json"
+if jq -n --arg session "$sid" --arg project "$proj" --arg title "$title" --arg preview "$preview" --arg text "$clean" --argjson created "$stamp" \
+  '{session: $session, project: $project, title: $title, preview: ($preview | .[0:120]), text: $text, created: $created}' \
+  > "$QUEUE/.tmp-$id.json"; then
+  mv "$QUEUE/.tmp-$id.json" "$QUEUE/$id.json"
+else
+  # a truncated manifest must not be promoted, and the orphan m4a would hold
+  # its id slot until the 2-day sweep; roll .seen back (only if still ours)
+  # so the reply is not permanently consumed by a failed write
+  rm -f "$QUEUE/.tmp-$id.json" "$QUEUE/$id.m4a"
+  [ "$(cat "$SEEN" 2>/dev/null)" = "$uuid" ] && printf '%s' "$last_seen" > "$SEEN"
+  echo "--- $(date) $sid manifest write failed" >> "$LOG"
+  exit 0
+fi
 
 # ONE success line per spoken reply. Until 2026-08-17 this log recorded only
 # failures, so a healthy install produced an EMPTY hook.log and INSTALL.md's
@@ -460,13 +514,20 @@ echo "$(date) $sid spoke $id engine=$engine_used chars=${#clean} secs=$(( $(date
 if [ "$app_ok" != 1 ]; then
   # fallback if the app is missing: serialized afplay (lock dir = the queue's mutex)
   echo "--- $(date) $sid SpeakySpeak missing, afplay fallback" >> "$LOG"
+  # same staleness breaker as MIDLOCK: a hook killed while holding the lock
+  # otherwise blocks every later fallback forever (broken-install path, the
+  # population least able to debug it)
+  if [ -d "$SPEECH_ROOT/.lock" ]; then
+    llmt=$(stat -f %m "$SPEECH_ROOT/.lock" 2>/dev/null || echo 0)
+    [ $(( $(date +%s) - llmt )) -gt 600 ] && rmdir "$SPEECH_ROOT/.lock" 2>/dev/null
+  fi
   i=0
   while ! mkdir "$SPEECH_ROOT/.lock" 2>/dev/null; do
     sleep 0.5
     i=$((i + 1))
     [ "$i" -gt 600 ] && exit 0
   done
-  trap 'rmdir "$SPEECH_ROOT/.lock" 2>/dev/null; cleanup_midlock' EXIT
+  trap 'rmdir "$SPEECH_ROOT/.lock" 2>/dev/null; cleanup_all' EXIT
   afplay "$QUEUE/$id.m4a"
 fi
 exit 0

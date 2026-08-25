@@ -220,6 +220,104 @@ case $GOT9 in
   *) bad "text is '$GOT9'" ;;
 esac
 
+# --- test 10: a task-notification injection is NOT a turn boundary ---------
+# Background subagents finishing mid-turn inject type:"user" entries with
+# origin.kind:"task-notification" and string content — no isMeta, no
+# tool_result, so they matched realuser and truncated the gather (2026-08-25
+# audit: reproduced the 8/11 content-loss class on multi-agent sessions).
+e_tasknotify() { printf '{"type":"user","uuid":"%s","timestamp":"%s","promptSource":"system","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>agent done</task-notification>"}}\n' "$1" "$(now)"; }
+echo "test 10: a task-notification entry does not truncate the gather"
+R10="$TDIR/root10"; T10="$TDIR/t10.jsonl"
+{ e_user u1 "do the thing"
+  e_text a1 "PART ONE of the answer."
+  e_tooluse a2 ""
+  e_toolresult u2
+  e_tasknotify n1
+  e_text a3 "PART TWO of the answer."
+} > "$T10"
+run_hook "$T10" "$R10"
+GOT10=$(qtext "$R10")
+WANT10=$'PART ONE of the answer.\n\nPART TWO of the answer.'
+if [ "$GOT10" = "$WANT10" ]; then ok "both parts spoken across the injection"
+else bad "text is '$GOT10' — the injection was read as a turn boundary"; fi
+
+# --- test 11: concurrent PostToolUse + Stop never share an id ---------------
+# Same-second TOCTOU: with the render in flight the final names don't exist
+# yet, so both hooks used to claim the same stamp and one reply silently
+# overwrote the other (~coin flip at <0.15s spacing, reproduced 2026-08-25).
+# A slow say stub holds the render open so the two runs genuinely overlap.
+echo "test 11: overlapping mid-run and Stop hooks queue two distinct items"
+SLOW="$TDIR/slowbin"; mkdir -p "$SLOW"
+cat > "$SLOW/say" <<'EOF'
+#!/bin/bash
+out=""
+while [ $# -gt 0 ]; do
+  [ "$1" = "-o" ] && { out="$2"; shift; }
+  shift
+done
+cat > /dev/null
+sleep 2
+[ -n "$out" ] && printf 'FAKEAUDIO' > "$out"
+EOF
+chmod +x "$SLOW/say"
+R11="$TDIR/root11"
+printf 'all' > "$THOME/.claude/speak-when"
+printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s","hook_event_name":"PostToolUse","tool_name":"Bash"}' \
+  "$T7" "$SID_FULL" "$PROJ" \
+  | env HOME="$THOME" PATH="$SLOW:$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R11" bash "$HOOK" &
+MID_PID=$!
+sleep 0.1
+printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T7" "$SID_FULL" "$PROJ" \
+  | env HOME="$THOME" PATH="$SLOW:$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R11" bash "$HOOK"
+wait "$MID_PID"
+rm -f "$THOME/.claude/speak-when"
+N11=$(ls "$R11/queue/"*.json 2>/dev/null | wc -l | tr -d " ")
+if [ "$N11" = "2" ]; then ok "two items survived the overlap"
+else bad "expected 2 queued items, got $N11 — an id collision ate a reply"; fi
+DUP11=0
+for j in "$R11/queue/"*.json; do
+  case $(jq -r .text "$j" 2>/dev/null) in
+    "THE FINAL ANSWER.") : ;;
+    *"THE FINAL ANSWER"*) DUP11=1 ;;   # Stop re-gathered the mid-run text too
+  esac
+done
+[ "$DUP11" = 0 ] && ok "Stop spoke only the remainder (fresh .seen re-read)" \
+  || bad "Stop re-spoke the mid-run text — stale .seen snapshot"
+
+# --- test 12: a failed render does not permanently consume the reply --------
+echo "test 12: after a say failure, the next Stop can still speak the reply"
+FAILBIN="$TDIR/failbin"; mkdir -p "$FAILBIN"
+printf '#!/bin/bash\ncat > /dev/null\nexit 1\n' > "$FAILBIN/say"
+chmod +x "$FAILBIN/say"
+R12="$TDIR/root12"; T12="$TDIR/t12.jsonl"
+{ e_user u1 "do the thing"
+  e_text a1 "The important answer."
+} > "$T12"
+printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T12" "$SID_FULL" "$PROJ" \
+  | env HOME="$THOME" PATH="$FAILBIN:$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R12" bash "$HOOK"
+if ls "$R12/queue/"*.m4a >/dev/null 2>&1; then bad "queued audio from a failing renderer"
+else ok "failed render queued nothing"; fi
+run_hook "$T12" "$R12"
+if [ "$(qtext "$R12")" = "The important answer." ]; then ok "reply recovered on the next Stop"
+else bad "reply lost for good: .seen was not rolled back on failure"; fi
+
+# --- test 13: a reply that is entirely a code block queues nothing ----------
+# Real `say` renders empty stdin into a valid silent m4a, so this used to
+# queue a playable empty row. .seen must still advance: an unspeakable reply
+# is skipped by decision, and without the mark every later Stop would re-poll it.
+echo "test 13: code-block-only reply is skipped, marked seen, no phantom item"
+R13="$TDIR/root13"; T13="$TDIR/t13.jsonl"
+{ e_user u1 "do the thing"
+  e_text a1 '```\nrm -rf build && make\n```'
+} > "$T13"
+run_hook "$T13" "$R13"
+if ls "$R13/queue/"*.m4a >/dev/null 2>&1; then bad "phantom silent item queued"
+else ok "nothing queued"; fi
+grep -q "nothing speakable after cleaning" "$R13/hook.log" 2>/dev/null \
+  && ok "hook logged the deliberate skip" || bad "expected 'nothing speakable' in hook.log"
+[ "$(cat "$R13/.seen-$SID" 2>/dev/null)" = "a1" ] \
+  && ok ".seen advanced past the skipped reply" || bad ".seen not advanced — later Stops will re-poll this reply"
+
 echo
 echo "hook tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

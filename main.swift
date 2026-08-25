@@ -1,4 +1,4 @@
-// SpeakySpeak — one tiny floating panel that queues and plays Claude Code's
+// SpeakySpeak — a menu-bar app that queues and plays Claude Code's
 // spoken replies, one at a time. Each session's replies play oldest-first as
 // one run, so a session's story is heard in order; the liveliest session's
 // run plays first. See Deck.resort() for the whole ordering rule.
@@ -383,7 +383,11 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         for name in names where name.hasSuffix(".end") && !name.hasPrefix(".") {
             let stem = String(name.dropLast(4))
             let sid = stem.split(separator: "-").dropFirst().joined(separator: "-")
-            if !sid.isEmpty { removeAll(sessionId: String(sid)) }
+            if !sid.isEmpty {
+                removeAll(sessionId: String(sid))
+                // the session is authoritatively over, so its mute is done too
+                mutedSessions.remove(String(sid))
+            }
             try? fm.removeItem(at: queueDir.appendingPathComponent(name))
         }
 
@@ -395,13 +399,11 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
             return true
         }
 
-        // a mute lives as long as the session has items in the deck; once the
-        // last one is gone the entry would be dead weight in UserDefaults
-        if !mutedSessions.isEmpty {
-            let liveSids = Set(items.map(\.sessionId))
-            let stale = mutedSessions.subtracting(liveSids)
-            if !stale.isEmpty { mutedSessions.subtract(stale) }
-        }
+        // A mute is only pruned when its session authoritatively ends (the
+        // .end marker above). Pruning on "no items right now" — the pre-1.2.7
+        // rule — meant Delete all, Clear played, or the hook's 2-day file
+        // sweep silently unmuted every muted session, and its next reply
+        // played aloud with nothing that read as "unmute" (2026-08-25 audit).
 
         let known = Set(items.map(\.id))
         var added = false
@@ -659,14 +661,17 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // double as a "make this stop" with no pause/mute side effects.
     func playNext() {
         if let id = currentID { setState(id, .done) }
-        if let next = nextPlayable {
+        // While muted, skip must stay "make this stop": play() clears the
+        // global mute, so starting the next reply here would unmute the app
+        // out loud from a skip meant to silence it.
+        if let next = nextPlayable, !muted {
             play(next)
         } else {
             stopPlayer()
             currentID = nil
             progress = 0
             duration = 0
-            dlog("skip into empty queue — quiet")
+            dlog(muted ? "skip while muted — staying quiet" : "skip into empty queue — quiet")
         }
     }
 
@@ -1248,6 +1253,17 @@ struct Scrubber: View {
         }
         .frame(height: 16)
         .background(NoWindowDrag())
+        // Shapes plus a DragGesture are not an accessibility element, so
+        // VoiceOver had no stop here at all: no position, no way to seek.
+        // The adjustable action makes VO up/down seek in 10s steps, matching
+        // the skip buttons.
+        .accessibilityElement()
+        .accessibilityLabel("Playback position")
+        .accessibilityValue("\(fmtTime(deck.progress)) of \(fmtTime(deck.duration))")
+        .accessibilityAdjustableAction { direction in
+            let step: Double = direction == .increment ? 10 : -10
+            deck.seek(to: max(0, min(deck.duration, deck.progress + step)))
+        }
         .animation(.easeOut(duration: 0.12), value: dragging || hovering)
     }
 }
@@ -1281,7 +1297,7 @@ struct VolumeSlider: View {
                     .onChanged { v in
                         dragging = true
                         deck.volume = Double(min(max(0, v.location.x / w), 1))
-                        deck.hint = "Volume — \(Int((deck.volume * 100).rounded()))%"
+                        deck.hint = "Volume \(Int((deck.volume * 100).rounded()))%"
                     }
                     .onEnded { _ in dragging = false })
             .onHover { hovering = $0 }
@@ -1289,7 +1305,15 @@ struct VolumeSlider: View {
         .frame(width: 52, height: 16)
         .background(NoWindowDrag())
         .help("Volume")
+        // labeled but previously inert to VoiceOver: no value, no way to
+        // change it. VO up/down now steps 5% at a time.
+        .accessibilityElement()
         .accessibilityLabel("Volume")
+        .accessibilityValue("\(Int((deck.volume * 100).rounded())) percent")
+        .accessibilityAdjustableAction { direction in
+            let step: Double = direction == .increment ? 0.05 : -0.05
+            deck.volume = max(0, min(1, deck.volume + step))
+        }
         .hoverHint("Volume, drag to adjust")
         .animation(.easeOut(duration: 0.12), value: dragging || hovering)
     }
@@ -1386,6 +1410,14 @@ struct DeckView: View {
         return ""
     }
 
+    private var axListLabel: String {
+        let live = deck.items.filter { $0.state != .done }.count
+        let played = deck.items.count - live
+        if live > 0 { return "Up next, \(live) \(live == 1 ? "reply" : "replies")" }
+        if played > 0 { return "Played, \(played) \(played == 1 ? "reply" : "replies")" }
+        return ""
+    }
+
     private func toolbar(_ theme: Theme) -> some View {
         let hasDone = deck.items.contains { $0.state == .done }
         return HStack(spacing: 2) {
@@ -1395,6 +1427,8 @@ struct DeckView: View {
                     .kerning(0.8)
                     .foregroundStyle(theme.secondary)
                     .lineLimit(1)
+                    // "UP NEXT · 3" reads the middle dot as "dot"; say it plainly
+                    .accessibilityLabel(axListLabel)
             } else {
                 Text(deck.hint)
                     .font(.system(size: 10, design: .serif).italic())
@@ -1405,17 +1439,17 @@ struct DeckView: View {
             // Adam's order, left to right: sort, clear played, delete all, settings
             sortMenu(theme)
             toolbarButton("wind", theme, disabled: !hasDone,
-                          help: "Clear played — sweep away all played replies",
+                          help: "Clear played: sweep away every reply you've heard",
                           label: "Clear played", hint: "Clear played") {
                 deck.clearDone()
             }
             toolbarButton("trash", theme, disabled: deck.items.isEmpty,
-                          help: "Delete all — remove every reply, played and queued",
-                          label: "Delete all", hint: "Delete all — played and queued") {
+                          help: "Delete all: remove every reply, played and queued",
+                          label: "Delete all replies, played and queued", hint: "Delete all, played and queued") {
                 deck.clearAll()
             }
             toolbarButton("gearshape", theme, disabled: false,
-                          help: "Settings — engine, voice, playback",
+                          help: "Settings: voice, appearance, updates",
                           label: "Settings", hint: "Settings") {
                 SettingsWindowController.shared.show()
             }
@@ -1513,6 +1547,12 @@ struct DeckView: View {
                             .font(.system(size: 14, weight: .semibold, design: .serif))
                             .foregroundStyle(theme.text)
                             .lineLimit(1)
+                            // names the now-playing card for VoiceOver as a
+                            // jumpable heading, with no container grouping
+                            // (a .contain wrapper would force VO users to
+                            // step INTO the card before reaching Play)
+                            .accessibilityLabel("Now playing. \(cur.title)")
+                            .accessibilityAddTraits(.isHeader)
                         Text(cur.created, style: .time)
                             .font(.system(size: 10).monospacedDigit())
                             .foregroundStyle(theme.secondary)
@@ -1547,9 +1587,9 @@ struct DeckView: View {
                             .accessibilityLabel("Forward 10 seconds")
                             .hoverHint("Forward 10 seconds")
                         transportButton("forward.end.fill", theme) { deck.playNext() }
-                            .help(deck.hasQueued ? "Skip to the next reply" : "Skip — stop this reply")
+                            .help(deck.hasQueued ? "Skip to the next reply" : "Skip: stop this reply")
                             .accessibilityLabel(deck.hasQueued ? "Play next" : "Skip")
-                            .hoverHint(deck.hasQueued ? "Skip to the next reply" : "Skip — stop this reply")
+                            .hoverHint(deck.hasQueued ? "Skip to the next reply" : "Skip: stop this reply")
                             .disabled(!deck.isPlaying && !deck.hasQueued)
                             .opacity(!deck.isPlaying && !deck.hasQueued ? 0.35 : 1)
                         Spacer()
@@ -1562,8 +1602,8 @@ struct DeckView: View {
             } else {
                 VStack(spacing: 8) {
                     Spark(size: 26, color: deck.enabled ? Theme.accent.opacity(0.55) : theme.secondary.opacity(0.5))
-                    Text(!deck.enabled ? "Speech is off — new replies won't be spoken"
-                         : deck.items.isEmpty ? "Waiting for replies…" : "Click a reply to play it")
+                    Text(!deck.enabled ? "Speech is off. New replies won't be spoken."
+                         : deck.items.isEmpty ? "Waiting for replies…" : "Hover a reply and press play")
                         .font(.system(size: 11, design: .serif).italic())
                         .foregroundStyle(theme.secondary)
                 }
@@ -1763,6 +1803,10 @@ struct GroupHeaderRow: View {
         .padding(.trailing, 12)   // clear of the right edge, like the rows
         .padding(.top, 4)
         .contentShape(Rectangle())
+        // the header's hover-revealed buttons, reachable without a pointer
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(named: "Play this session next") { deck.playGroupNext(block.key) }
+        .accessibilityAction(named: "Remove this session's queued replies") { deck.removeQueued(groupKey: block.key) }
         .onHover { inside in
             hover = inside
             if !inside, deck.hint.hasPrefix("Play this") || deck.hint.hasPrefix("Remove this") {
@@ -1819,6 +1863,17 @@ struct DeckRow: View {
             }
             .padding(.vertical, grouped ? 2 : 4)
             .padding(.leading, grouped ? 14 : 7)
+            // One VoiceOver stop per row (title/time/preview used to be three
+            // stops with no state), and the hover-revealed buttons — which do
+            // not exist in the hierarchy until a pointer arrives — are exposed
+            // as custom actions instead, so a VO or keyboard user can play,
+            // mute, or remove without ever hovering. Pixels are untouched.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(axRowLabel)
+            .accessibilityAction(named: "Play now") { deck.play(item) }
+            .accessibilityAction(named: sessionMuted ? "Unmute this session"
+                                                     : "Mute this session") { deck.toggleSessionMute(item) }
+            .accessibilityAction(named: "Remove from the queue") { deck.remove(item) }
 
             if effHover {
                 Button(action: { deck.play(item) }) {
@@ -1829,6 +1884,7 @@ struct DeckRow: View {
                 .buttonStyle(.plain)
                 .help("Play now")
                 .hoverHint("Play now")
+                .accessibilityLabel("Play \(item.title) now")
                 muteButton
                 Button(action: { deck.remove(item) }) {
                     Image(systemName: "xmark.circle.fill")
@@ -1838,6 +1894,7 @@ struct DeckRow: View {
                 .buttonStyle(.plain)
                 .help("Remove")
                 .hoverHint("Remove")
+                .accessibilityLabel("Remove \(item.title) from the queue")
             } else if sessionMuted && item.state != .done {
                 // muted state stays visible on every unplayed row — that IS
                 // the "which sessions are muted" UI, and clicking it unmutes
@@ -1861,6 +1918,18 @@ struct DeckRow: View {
     }
 
     private var sessionMuted: Bool { deck.isSessionMuted(item) }
+
+    // spoken row summary: state first, then what it is
+    private var axRowLabel: String {
+        let state: String
+        switch item.state {
+        case .playing: state = "Now playing"
+        case .done:    state = "Played"
+        case .queued:  state = sessionMuted ? "Muted session, will not play"
+                              : isNextUp ? "Next up" : "Queued"
+        }
+        return "\(state). \(item.title). \(item.preview)"
+    }
 
     private var muteButton: some View {
         Button(action: { deck.toggleSessionMute(item) }) {
@@ -2090,8 +2159,8 @@ final class Updater: ObservableObject {
     }
     @Published var phase: UpdatePhase = .idle
 
-    private static let installedMarker = "/tmp/claude-speech/.update-installed"
-    private static let failedMarker = "/tmp/claude-speech/.update-failed"
+    private static let installedMarker = speechRoot + "/.update-installed"
+    private static let failedMarker = speechRoot + "/.update-failed"
 
     func performUpdate() {
         if case .running = phase { return }
@@ -2107,7 +2176,7 @@ final class Updater: ObservableObject {
         // Every step's output lands in update.log — the old chain logged only
         // install.sh, which made its one field failure undiagnosable from logs.
         let script = """
-        LOG=/tmp/claude-speech/update.log
+        LOG=\(speechRoot)/update.log
         mkdir -p /tmp/claude-speech
         rm -f \(Self.installedMarker) \(Self.failedMarker)
         {
@@ -2120,7 +2189,7 @@ final class Updater: ObservableObject {
           touch \(Self.installedMarker)
         else
           echo "=== update FAILED rc=$rc $(date) ===" >> "$LOG"
-          echo "a step failed (rc=$rc); log: /tmp/claude-speech/update.log" > \(Self.failedMarker)
+          echo "a step failed (rc=$rc); log: $LOG" > \(Self.failedMarker)
         fi
         """
         let p = Process()
@@ -2132,7 +2201,10 @@ final class Updater: ObservableObject {
         }
 
         let deadline = Date().addingTimeInterval(300)
-        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] t in
+        // .common, not .default: while a menu is open or a window is dragged
+        // the run loop sits in tracking mode and a .default timer stops
+        // firing, so the marker went unnoticed and "Updating…" hung there.
+        let poll = Timer(timeInterval: 0.5, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
             let fm = FileManager.default
             if fm.fileExists(atPath: Self.installedMarker) {
@@ -2148,9 +2220,10 @@ final class Updater: ObservableObject {
             } else if Date() > deadline {
                 t.invalidate()
                 dlog("update timed out")
-                self.phase = .failed("timed out after 5 minutes; log: /tmp/claude-speech/update.log")
+                self.phase = .failed("timed out after 5 minutes; log: \(speechRoot)/update.log")
             }
         }
+        RunLoop.main.add(poll, forMode: .common)
     }
 
     // Quit ourselves and let a detached waiter reopen the new bundle. The
@@ -2190,7 +2263,7 @@ enum Feedback {
             engine = FileManager.default.isExecutableFile(atPath: kokoro) ? "kokoro" : "say"
         }
         var logTail = ""
-        if let log = try? String(contentsOfFile: "/tmp/claude-speech/hook.log", encoding: .utf8) {
+        if let log = try? String(contentsOfFile: speechRoot + "/hook.log", encoding: .utf8) {
             logTail = log.split(separator: "\n").suffix(6).joined(separator: "\n")
         }
         let body = """
@@ -2524,18 +2597,18 @@ struct RainbowRipple: View {
     ]
 }
 extension View {
-    // The mini HUD's surface. In Liquid Glass mode (macOS 26+) it's the clear
-    // glass variant — translucent, sampling whatever's behind the panel. In
-    // Frosted mode (or below macOS 26) it's an OPAQUE card.
+    // The mini player's surface. In the glass styles (macOS 26+) it's
+    // translucent, sampling whatever's behind the panel. Classic (or below
+    // macOS 26) is an OPAQUE card.
     //
-    // Frosted used to fill with .regularMaterial, which is translucent by
-    // definition, on a panel that is itself clear and non-opaque. Over a dark
-    // wallpaper the card darkened and took the secondary text down with it,
-    // which is how the reply preview ended up unreadable on Adam's dark
-    // desktop (2026-08-24). Frosted exists precisely so contrast does NOT
-    // depend on the backdrop — the README has called it "the solid, always
-    // legible material card" all along, and this makes that true. Now its
-    // contrast is exactly the popover's, which is known to read well.
+    // Classic (then named Frosted) used to fill with .regularMaterial, which
+    // is translucent by definition, on a panel that is itself clear and
+    // non-opaque. Over a dark wallpaper the card darkened and took the
+    // secondary text down with it, which is how the reply preview ended up
+    // unreadable on Adam's dark desktop (2026-08-24). Classic exists
+    // precisely so contrast does NOT depend on the backdrop — README calls it
+    // "an opaque card, legible over any wallpaper", and this makes that true.
+    // Now its contrast is exactly the full deck's, which is known to read well.
     @ViewBuilder
     func hudSurface(_ style: HUDStyle, cornerRadius r: CGFloat,
                     fill: Color, stroke: Color) -> some View {
@@ -2639,6 +2712,7 @@ struct MiniDeckView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Dismiss. It pops back up with the next reply")
+                    .accessibilityLabel("Hide the mini player")
                 }
             }
             HStack(spacing: 0) {
@@ -2666,6 +2740,7 @@ struct MiniDeckView: View {
                     }
                     .buttonStyle(.plain)
                     .help(deck.isPlaying ? "Pause" : "Play")
+                    .accessibilityLabel(deck.isPlaying ? "Pause" : "Play")
                     miniButton("goforward.10", theme, glass: glass) { deck.skip(10) }
                 }
                 Spacer(minLength: 4)
@@ -2766,11 +2841,21 @@ struct MiniDeckView: View {
         // is unchanged. Drop this line if the card should just get taller.
         .padding(.vertical, -5)
         .background(NoWindowDrag())
+        // same story as the full deck's Scrubber: shapes + gesture were no
+        // accessibility element at all — VO could neither hear the position
+        // nor seek. VO up/down seeks in 10s steps.
+        .accessibilityElement()
+        .accessibilityLabel("Playback position")
+        .accessibilityValue("\(fmtTime(deck.progress)) of \(fmtTime(deck.duration))")
+        .accessibilityAdjustableAction { direction in
+            let step: Double = direction == .increment ? 10 : -10
+            deck.seek(to: max(0, min(deck.duration, deck.progress + step)))
+        }
         .animation(.easeOut(duration: 0.12), value: live)
     }
 
     // Glass mode → a real Liquid Glass circular control whose symbol contrast the
-    // system adapts to whatever's behind the panel. Frosted mode → the flat icon.
+    // system adapts to whatever's behind the panel. Classic mode → the flat icon.
     @ViewBuilder
     // One transport for every style: bare glyphs, no key behind them. The
     // glass styles used to give each button its own .glass circle, and Adam
@@ -2791,6 +2876,9 @@ struct MiniDeckView: View {
         }
         .buttonStyle(.plain)
         .help(Self.hint(for: symbol))
+        // .help() is only the VO hint; without a label these were bare
+        // unnamed buttons to VoiceOver
+        .accessibilityLabel(Self.axLabel(for: symbol))
     }
 
     private static func hint(for symbol: String) -> String {
@@ -2798,7 +2886,17 @@ struct MiniDeckView: View {
         case "backward.end.fill": return "Restart · back one reply"
         case "gobackward.10":     return "Back 10 seconds"
         case "goforward.10":      return "Forward 10 seconds"
-        case "forward.end.fill":  return "Skip — stop this reply"
+        case "forward.end.fill":  return "Skip: stop this reply"
+        default:                  return ""
+        }
+    }
+
+    private static func axLabel(for symbol: String) -> String {
+        switch symbol {
+        case "backward.end.fill": return "Restart this reply, or go back one"
+        case "gobackward.10":     return "Back 10 seconds"
+        case "goforward.10":      return "Forward 10 seconds"
+        case "forward.end.fill":  return "Skip this reply"
         default:                  return ""
         }
     }
@@ -2870,6 +2968,9 @@ final class MiniHUDController {
         p.isOpaque = false
         p.hasShadow = true
         p.hidesOnDeactivate = false
+        // a titleless borderless panel is anonymous in VoiceOver's window
+        // list; the label names it there without drawing anything
+        p.setAccessibilityLabel("The mini player")
         // draggable anywhere: grab the background (the transport buttons are
         // discrete taps, so they still click — only a click-and-move on empty
         // space moves the panel). No SwiftUI drag gestures live here to fight it.
@@ -3036,7 +3137,6 @@ final class MiniHUDController {
 
 // MARK: - Settings (mirrors the dotfiles speak-reply.sh reads, plus app prefs)
 
-let playbackRates: [Double] = [0.8, 1.0, 1.25, 1.5, 2.0]
 
 // Curated English Kokoro-82M voices (the model card lists ~54; any id still
 // works if typed into ~/.claude/speak-voice-kokoro by hand).
@@ -3092,7 +3192,7 @@ enum HUDStyle: String, CaseIterable, Identifiable {
         }
     }
     var isGlass: Bool { self != .classic }
-    // Liquid Glass only exists on macOS 26+; below that we always render frosted.
+    // Liquid Glass only exists on macOS 26+; below that we always render Classic.
     static var glassAvailable: Bool { if #available(macOS 26, *) { true } else { false } }
     static var defaultStyle: HUDStyle { glassAvailable ? .glassy : .classic }
 }
@@ -3192,6 +3292,12 @@ final class SettingsStore: ObservableObject {
             let v = SettingsStore.loadSayVoices()
             DispatchQueue.main.async { self?.sayVoices = v }
         }
+        // These three are loads, not choices: guard them like reload() does.
+        // Unguarded, each didSet persisted the fallback default to disk on
+        // first launch (freezing e.g. hudStyle's OS-dependent default as if
+        // the user picked it) and let a demo instance, which shares the real
+        // defaults domain, write into the live app's settings.
+        loading = true
         accentTone = Theme.accentTone
         // migrate the pre-2026-08-25 two-value setting rather than silently
         // resetting anyone who had deliberately chosen the solid card
@@ -3200,6 +3306,7 @@ final class SettingsStore: ObservableObject {
             ?? (storedHUD == "frosted" ? .classic
                 : storedHUD == "liquidGlass" ? .glassy : HUDStyle.defaultStyle)
         hudVisibility = UserDefaults.standard.string(forKey: "hudVisibility").flatMap(HUDVisibility.init) ?? .whileSpeaking
+        loading = false
         // screenshots need the opaque surface: glass bakes whatever desktop was
         // behind it into the capture (didSet is inert while loading, no persist)
         if demoScene != nil { loading = true; hudStyle = .classic; loading = false }
@@ -3255,7 +3362,7 @@ final class SettingsStore: ObservableObject {
 
 // MARK: - Kokoro rendering (shared by voice preview and queue re-render)
 
-let kokoroRenderDir = URL(fileURLWithPath: "/tmp/claude-speech/render", isDirectory: true)
+let kokoroRenderDir = URL(fileURLWithPath: speechRoot + "/render", isDirectory: true)
 
 // Same request-file protocol as the hook's render_via_daemon (see tts-daemon.py):
 // write <id>.req, wait for <id>.done, trust the daemon only while its heartbeat
@@ -3332,7 +3439,7 @@ final class VoicePreviewer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     enum State { case idle, rendering, playing }
     @Published var state: State = .idle
 
-    private let previewDir = URL(fileURLWithPath: "/tmp/claude-speech/preview", isDirectory: true)
+    private let previewDir = URL(fileURLWithPath: speechRoot + "/preview", isDirectory: true)
     private let kokoroBin = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".local/bin/mlx_audio.tts.generate")
     private var player: AVAudioPlayer?
@@ -3640,8 +3747,10 @@ struct SettingsView: View {
                             .overlay(Circle().strokeBorder(.black.opacity(0.12)))
                             .frame(width: 16, height: 16)
                         Slider(value: $settings.accentTone, in: 0...1)
+                            .accessibilityLabel("Accent colour hue")
                         Button("Reset") { settings.accentTone = Theme.defaultAccentTone }
                             .disabled(abs(settings.accentTone - Theme.defaultAccentTone) < 0.001)
+                            .accessibilityLabel("Reset accent colour to the default")
                     }
                 }
                 Picker("Show mini player", selection: $settings.hudVisibility) {
@@ -3664,19 +3773,26 @@ struct SettingsView: View {
                             Updater.shared.checkNow()
                         }
                         .disabled(updater.checking)
-                        .overlay(alignment: .top) {
-                            if upToDate {
-                                Label("Up to date", systemImage: "checkmark.circle.fill")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.green)
-                                    .fixedSize()
-                                    .offset(y: -15)
-                                    .allowsHitTesting(false)
-                                    .transition(.opacity)
-                            }
-                        }
                     } label: {
                         versionLabel
+                    }
+                    // The confirmation floats in the gap between the version
+                    // and the button, vertically centered IN the row — the old
+                    // spot above the button poked outside the row and the
+                    // section card clipped it to a sliver (Adam's screenshot,
+                    // 2026-08-25). An overlay adds no layout, so neither the
+                    // row nor the version text ever moves; 150pt clears
+                    // "SpeakySpeak 10.10.10" comfortably in the 400pt window.
+                    .overlay(alignment: .leading) {
+                        if upToDate {
+                            Label("Up to date", systemImage: "checkmark.circle.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.green)
+                                .fixedSize()
+                                .padding(.leading, 122)
+                                .allowsHitTesting(false)
+                                .transition(.opacity)
+                        }
                     }
                 } else {
                     versionLabel
@@ -3726,9 +3842,11 @@ struct SettingsView: View {
                     Button("Email draft") { Feedback.openMailReport() }
                         .frame(maxWidth: .infinity)
                         .help("Opens a draft to \(Feedback.address) with version, engine, and a log entry")
+                        .accessibilityLabel("Write the report yourself in an email draft")
                     Button("Claude draft") {
                         Feedback.copyClaudePrompt()
                         promptCopied = true
+                        AccessibilityNotification.Announcement("Prompt copied. Paste it into Claude Code.").post()
                         // Self-clearing: the Settings window is reused for the
                         // app's whole life, so onAppear can't be relied on to
                         // reset this the next time it opens.
@@ -3736,17 +3854,25 @@ struct SettingsView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .help("Copies a prompt for your Claude Code to gather the logs and write the report")
+                    .accessibilityLabel("Copy a prompt for Claude to write the report")
                 }
             }
         }
         .formStyle(.grouped)
         .frame(width: 400)
-        .onAppear { settings.reload() }
+        .onAppear {
+            settings.reload()
+            // screenshot staging: the settings scene shows the up-to-date
+            // flash so its placement is capturable (and verifiable)
+            if demoScene == "settings" { upToDate = true }
+        }
         // fires when a check finishes; only meaningful when it found nothing,
         // since finding something swaps the row for the update controls
         .onChange(of: updater.checking) { was, now in
             guard was, !now, updater.availableVersion == nil else { return }
             withAnimation { upToDate = true }
+            // the flash is visual-only; say it for VoiceOver users too
+            AccessibilityNotification.Announcement("SpeakySpeak is up to date").post()
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                 withAnimation { upToDate = false }
             }
@@ -3906,6 +4032,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.delegate = self   // hide the compact HUD while the full deck is open
         let host = NSHostingController(rootView: DeckView())
         host.sizingOptions = [.preferredContentSize]   // popover tracks the deck's size
+        // names the popover for VoiceOver on the AppKit side — a SwiftUI
+        // .contain container would add a group boundary VO users must step
+        // into before reaching any control; this adds none
+        host.view.setAccessibilityLabel("The full deck")
         popover.contentViewController = host
 
         NotificationCenter.default.addObserver(
@@ -4095,7 +4225,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
     }
 
-    @objc private func toggleMute() { Deck.shared.muted.toggle() }
+    // Route through Deck.toggleMute() so the menu item means the same thing as
+    // the deck's own Mute button: pause the voice now, resume/autoplay on
+    // unmute. Flipping `muted` raw let the current reply keep talking (found
+    // in the 2026-08-25 audit; shipped that way since the menu-bar move).
+    @objc private func toggleMute() { Deck.shared.toggleMute() }
     @objc private func openSettings() { SettingsWindowController.shared.show() }
 
     // The icon is the brand "Sy" mark (default) or the speaker status glyph.
@@ -4133,6 +4267,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // is drawn to the LEFT of the icon (see imagePosition above).
         button.title = parts.isEmpty ? "" : parts.joined(separator: " ") + " "
         button.toolTip = tip
+        // The queue count and the silenced slash are drawn as PIXELS into the
+        // icon, and the title is empty, so without this the app's only entry
+        // point was an unnamed button to VoiceOver and the count was invisible
+        // to assistive tech. The tooltip already says everything; speak it.
+        button.setAccessibilityLabel(
+            tip.replacingOccurrences(of: "\n", with: ". ")
+               .replacingOccurrences(of: " · ", with: ", ")
+               .replacingOccurrences(of: "↑", with: ""))
 
         if deck.isPlaying {
             startPulse()
@@ -4220,11 +4362,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func stateTooltip(_ deck: Deck, queued: Int) -> String {
         let base: String
-        if !deck.enabled      { base = "SpeakySpeak — speech off" }
-        else if deck.isPlaying { base = "SpeakySpeak — playing" }
-        else if deck.muted    { base = "SpeakySpeak — muted (queuing silently)" }
+        if !deck.enabled      { base = "SpeakySpeak: speech off" }
+        else if deck.isPlaying { base = "SpeakySpeak: playing" }
+        else if deck.muted    { base = "SpeakySpeak: muted, queuing silently" }
         else                  { base = "SpeakySpeak" }
-        return queued > 0 ? "\(base) · \(queued) queued" : base
+        return queued > 0 ? "\(base) · \(queued) \(queued == 1 ? "reply" : "replies") queued" : base
     }
 
     // Animated equalizer bars shown while a reply is playing, so the menu bar

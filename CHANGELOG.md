@@ -2,6 +2,20 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.7 (2026-08-25)
+
+**The right-click Mute actually mutes.** The Mute item in the menu-bar right-click menu flipped the setting without stopping the voice, so a reply already speaking talked to the end while the icon claimed silence, and unmuting from the menu did not resume. Both now behave exactly like the speaker button on the full deck: mute pauses on the spot, unmute picks up where it left off.
+
+**Skip stays quiet while muted.** Pressing skip while the app was muted started the next reply out loud and silently cleared the mute. Skip now means "make this stop" even then: the current reply is marked played and the app stays silent until you unmute.
+
+**Muted sessions stay muted.** A session's mute used to clear itself whenever its replies left the list, so Delete all, Clear played, or plain queue aging quietly unmuted everything and the next reply played aloud. A mute now clears only when its session actually ends.
+
+**A tour button in Settings.** Settings ▸ About & support now has a "How to use it" row with an Open the tour button, which opens the visual tour at speakyspeak.com/howto. The "Up to date" confirmation also sits inside its own row now instead of being clipped by the section edge.
+
+**VoiceOver can drive the whole app now.** The menu-bar icon says its state and queue count out loud (the count is drawn into the icon, so assistive tech could not see it at all). Each queue row is one spoken summary, state first, and play, mute session, and remove are reachable as VoiceOver actions without a pointer, which they never were, since those buttons only existed under a hovering mouse. Both progress bars can be heard and seeked. Every mini player button has a name. The two windows are named the full deck and the mini player. Checking for updates and copying the report prompt announce their result.
+
+**Fixes for rare lost replies.** Three timing bugs in the hook could lose or repeat a reply when mid-turn speech is on: two hooks landing in the same second could overwrite one file with the other, the end-of-turn hook could re-speak what the mid-turn hook had just read, and a background agent finishing could cut the gathered reply short. A reply whose voice render fails is no longer permanently swallowed, and a reply that is entirely a code block no longer queues a silent empty row. The updater's progress check also no longer stalls while a menu is open.
+
 ## 1.2.6 (2026-08-25)
 
 **Mute a single session.** With several Claude Code sessions running, one busy session can drown out the ones you care about. Hover any reply in the queue and a speaker-slash now sits between play and remove: click it and that whole terminal session goes quiet, immediately if it is the one speaking. Its replies keep arriving and stay in the list, each with a visible speaker-slash and a grey dot so it is always clear what is muted, and clicking the icon again brings the whole backlog back. Nothing is deleted: playback simply steps over muted sessions, and the count on the menu-bar icon only includes replies that will actually play.

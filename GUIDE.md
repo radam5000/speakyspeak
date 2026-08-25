@@ -127,7 +127,7 @@ The Settings window writes plain files in `~/.claude/`, so shell edits and the G
 | `speak-voice-kokoro` | Kokoro voice name. Default `bf_lily`. |
 | `speak-voice` | macOS voice name. Absent probes for the best installed one. |
 | `speak-rate` | Words per minute for macOS voices. |
-| `speak-peer` | The other Mac's Tailscale IP, so two decks take turns on one pair of AirPods. |
+| `speak-peer` | The other Mac's Tailscale IP, so the two Macs take turns on one pair of AirPods. |
 | `speak-lead-in` | Seconds of silence before speech when the app has been quiet a while, so shared AirPods finish switching to this Mac before the first word. Default 1.2. Set `0` to turn it off. |
 
 ## When something seems wrong
