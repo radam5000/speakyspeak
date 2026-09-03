@@ -3804,6 +3804,16 @@ struct SettingsView: View {
                 } label: {
                     Text("How to use it")
                 }
+                // Release notes one click away (Adam, 2026-09-03): the in-app
+                // update is silent about what changed, so a user who just
+                // updated had no way to learn what 1.2.8 gave them.
+                LabeledContent {
+                    Button("Release notes") {
+                        NSWorkspace.shared.open(URL(string: Updater.repoPage + "/blob/main/CHANGELOG.md")!)
+                    }
+                } label: {
+                    Text("What's new")
+                }
                 if let v = updater.availableVersion {
                     // The update runs for ~a minute; every state is visible
                     // here (2026-08-18: a silent updater cost a real user a

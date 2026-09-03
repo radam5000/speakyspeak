@@ -92,19 +92,12 @@ else
   echo "mlx-audio not installed — skipping warm TTS daemon (say fallback stays)."
 fi
 
+# Register the hooks in ~/.claude/settings.json (add-only, backed up, no-op
+# when already there). Runs on every install and in-app update, so a new hook
+# event reaches existing users without a hand-edit (2026-09-03).
+bash scripts/wire-hooks.sh
+
 cat <<'EOF'
-
-If this is a first install, wire the hooks in ~/.claude/settings.json:
-
-  "hooks": {
-    "Stop": [{ "matcher": "*", "hooks": [
-      { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
-        "timeout": 600, "async": true }
-    ]}],
-    "SessionEnd": [{ "matcher": "*", "hooks": [
-      { "type": "command", "command": "bash ~/.claude/hooks/session-end.sh" }
-    ]}]
-  }
 
 Optional knobs (plain files):
   ~/.claude/speak-off    hard kill — replies aren't rendered at all

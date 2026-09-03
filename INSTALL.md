@@ -143,9 +143,19 @@ Expected: all four paths exist.
 
 ---
 
-## 5. Register the hooks in Claude Code
+## 5. Check the hooks are registered in Claude Code
 
-`install.sh` does **not** edit `~/.claude/settings.json` for you. Open that file and add the following inside the top-level `"hooks"` object. **Merge, don't replace** — if `"hooks"` or existing `Stop`/`SessionEnd` entries already exist, add these hook objects alongside what's there, don't overwrite the file.
+`install.sh` (step 4) registers the hooks in `~/.claude/settings.json` for you. It only adds: anything already in the file (permissions, env, other hooks) is left as it was, a backup copy is written next to the file first, and a second run changes nothing. Its output ends with either `Registered Claude Code hooks in ... : added ...` or `Claude Code hooks already registered ...`.
+
+Confirm all four events are there:
+```sh
+jq -r '.hooks | keys[]' ~/.claude/settings.json
+```
+Expected: the list includes `Notification`, `PostToolUse`, `SessionEnd`, `Stop` (other events the user already had may appear too).
+
+What each one does, so you can explain it if asked: `Stop` reads the reply when a turn ends. `PostToolUse` lets the user turn on mid-run speech later in Settings ▸ Speech ▸ "Read replies"; in the default setting it exits in milliseconds. `Notification` makes permission prompts audible: when Claude Code stops to ask "may I run this?", nothing is written to the transcript, so without it a session behind another window waits in silence; with it a distinct chime plays and the deck says which session is waiting and what was asked. `SessionEnd` clears a finished session's played items.
+
+**Only if install.sh printed `Could not edit ~/.claude/settings.json`** (the file was not valid JSON, or jq is missing): fix that, run `bash scripts/wire-hooks.sh` from the repo, or merge this block into the top-level `"hooks"` object by hand. Merge, don't replace.
 
 ```json
 "hooks": {
@@ -167,46 +177,7 @@ Expected: all four paths exist.
 }
 ```
 
-The `PostToolUse` entry is what lets SpeakySpeak read a long run aloud **as it
-happens**, instead of staying silent through twenty minutes of tool calls and
-then reading the whole thing at the end. It is the same script; it does nothing
-until the user turns it on in Settings ▸ Speech ▸ "Read replies", and in the
-default setting it exits within milliseconds of being called. Wire it now even
-if the user doesn't want mid-run speech yet — then the setting just works later,
-with no second trip into `settings.json`.
-
-The `Notification` entry is what makes a **permission prompt audible**. When
-Claude Code stops to ask "may I run this?", nothing is written to the
-transcript, so without this hook a session parked behind another window just
-waits in silence. With it, the same script plays a chime (Hero, distinct from
-the end-of-reply Glass) and then speaks "Waiting on you in <session>. <what
-Claude asked>" through the deck. Always on, no setting; a different chime can
-be set by writing a sound file's path to `~/.claude/speak-prompt-chime`.
-
-If `~/.claude/settings.json` doesn't exist yet, create it with just:
-```json
-{
-  "hooks": {
-    "Stop": [{ "matcher": "*", "hooks": [
-      { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
-        "timeout": 600, "async": true }
-    ]}],
-    "PostToolUse": [{ "matcher": "*", "hooks": [
-      { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
-        "timeout": 600, "async": true }
-    ]}],
-    "Notification": [{ "matcher": "permission_prompt|elicitation_dialog|agent_needs_input", "hooks": [
-      { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
-        "timeout": 120, "async": true }
-    ]}],
-    "SessionEnd": [{ "matcher": "*", "hooks": [
-      { "type": "command", "command": "bash ~/.claude/hooks/session-end.sh" }
-    ]}]
-  }
-}
-```
-
-Verify the file is valid JSON after editing:
+Verify the file is valid JSON afterwards:
 ```sh
 jq . ~/.claude/settings.json > /dev/null && echo "valid JSON"
 ```
@@ -273,7 +244,7 @@ Expected: a `spoke <id> engine=... chars=... secs=...` line per spoken reply (ad
 |---|---|---|
 | Audio plays but is much quieter than normal speech | `ffmpeg` not installed; hook fell back to `afconvert` with no gain stage | `brew install ffmpeg`, then just wait for the next reply (no reinstall needed — the hook checks for ffmpeg on every run) |
 | ~3 second delay before every reply starts speaking | Warm TTS daemon isn't running, OR the daemon is fine but the **active voice isn't cached** — the daemon runs offline (`HF_HUB_OFFLINE=1`) and can't fetch a missing voice, so every render falls to the cold CLI. `tts-daemon.log` showing `IncompleteSnapshotError` with a `voices/*.safetensors` file confirms it | Cache the voice the hook actually uses: `V=$(cat ~/.claude/speak-voice-kokoro 2>/dev/null \|\| echo bf_lily); ~/.local/bin/mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --voice "$V" --text ok --file_prefix /tmp/vfix --join_audio; rm -f /tmp/vfix*.wav`, then `launchctl kickstart -k gui/$(id -u)/com.adamraabe.speakyspeak-tts`; check `~/Library/Logs/speakyspeak-tts.err.log` for other crash detail |
-| No speech at all, and `/tmp/claude-speech/hook.log` has no new lines after a turn | Hook not registered in `~/.claude/settings.json`, or the session predates the registration on an older Claude Code | Recheck step 5's JSON is valid and merged correctly; if still silent, start a **new** Claude Code session |
+| No speech at all, and `/tmp/claude-speech/hook.log` has no new lines after a turn | Hook not registered in `~/.claude/settings.json`, or the session predates the registration on an older Claude Code | Run `bash scripts/wire-hooks.sh` from the repo and recheck step 5; if still silent, start a **new** Claude Code session |
 | No speech at all, but `hook.log` shows the hook ran | `~/.claude/speak-off` exists (hard kill), or the app is muted | `rm -f ~/.claude/speak-off`; right-click the menu-bar icon and check Mute is off |
 | Voice sounds robotic / like the built-in macOS voice | Kokoro isn't installed, the daemon/CLI failed, or the **active voice isn't cached** (see the delay row above) and both Kokoro paths failed | Check `hook.log` for `engine=say` lines; cache the active voice per the delay row, redo step 3 if Kokoro was never installed, then `./install.sh` again; or in System Settings → Accessibility → Spoken Content → System Voice, download a better voice (e.g. Ava Premium) — the hook finds it automatically |
 | No menu-bar icon | App isn't running | `open ~/Applications/SpeakySpeak.app` |

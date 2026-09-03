@@ -2,6 +2,12 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.9 (2026-09-03)
+
+**The installer wires its own hooks.** Until now `install.sh` printed a JSON block and left `~/.claude/settings.json` to you or your Claude, which meant an in-app update could never bring a new hook event to an existing install: 1.2.8's spoken permission prompts silently missed everyone who updated from the menu. `install.sh` now registers all four events itself, add-only (anything already in the file stays exactly as it was, a backup is written first, a second run changes nothing), and since the in-app update runs `install.sh`, updating to 1.2.9 gives you the permission-prompt chime with nothing to paste. The 1.2.8 note below about editing `settings.json` no longer applies.
+
+**Release notes in Settings.** Settings ▸ About & support has a "What's new" row that opens these notes, so an update is no longer silent about what it changed.
+
 ## 1.2.8 (2026-09-03)
 
 **Permission prompts are spoken now.** When Claude Code stops to ask "may I run this?" (a permission prompt, or any dialog waiting on you), nothing lands in the transcript, so a session parked behind another window used to wait in silence with no chime at all. The hook now runs on Claude Code's `Notification` event too: it plays a distinct chime (Hero, not the end-of-reply Glass) at once, then speaks "Waiting on you in <session>. <what Claude asked>" through the deck, so you hear which session wants what. Always on, no setting. A different chime can be set by writing a sound file's path to `~/.claude/speak-prompt-chime`. Existing installs need the new `Notification` block added to `~/.claude/settings.json` (INSTALL.md step 5); the update itself cannot edit that file.

@@ -32,6 +32,8 @@ res $? "build.sh (log: /tmp/speakyspeak-verify-build.log)"
 step "3. hook-contract fixture tests"
 bash tests/run-hook-tests.sh
 res $? "tests/run-hook-tests.sh"
+bash tests/run-wire-tests.sh
+res $? "tests/run-wire-tests.sh (settings.json add-only merge)"
 
 step "4. INSTALL.md JSON blocks parse"
 JB=0; JBAD=0

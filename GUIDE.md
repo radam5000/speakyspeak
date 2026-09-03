@@ -62,7 +62,7 @@ Open Settings from the gear on the full deck's "Up next" line, or right-click th
 | Setting | What it does |
 | --- | --- |
 | **Speak Claude's replies** | The master switch. Off means replies aren't turned into audio at all. Different from Mute, which keeps building the queue silently. |
-| **Read replies** | *When* it speaks. **When Claude finishes** reads a reply once Claude stops and waits for you. **As it works, skipping short lines** reads each step of a long run but stays quiet for short connective lines, which matters when Claude asks you to do something twenty minutes into a run that hasn't ended. **As it works, every line** reads all of them. The two "as it works" modes need the PostToolUse hook registered (INSTALL.md step 5). |
+| **Read replies** | *When* it speaks. **When Claude finishes** reads a reply once Claude stops and waits for you. **As it works, skipping short lines** reads each step of a long run but stays quiet for short connective lines, which matters when Claude asks you to do something twenty minutes into a run that hasn't ended. **As it works, every line** reads all of them. install.sh registers the PostToolUse hook these need (INSTALL.md step 5 checks it). |
 | **Voice** | Which voice speaks. Kokoro voices when the neural engine is installed, otherwise your macOS voices. ▶ previews the selected one. Changing it re-renders whatever is still queued, so you don't get a mix. |
 | **Rate** | Words per minute, for macOS voices only. Kokoro speed is the playback speed selector instead. |
 
