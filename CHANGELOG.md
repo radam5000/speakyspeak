@@ -2,6 +2,12 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.8 (2026-09-03)
+
+**Permission prompts are spoken now.** When Claude Code stops to ask "may I run this?" (a permission prompt, or any dialog waiting on you), nothing lands in the transcript, so a session parked behind another window used to wait in silence with no chime at all. The hook now runs on Claude Code's `Notification` event too: it plays a distinct chime (Hero, not the end-of-reply Glass) at once, then speaks "Waiting on you in <session>. <what Claude asked>" through the deck, so you hear which session wants what. Always on, no setting. A different chime can be set by writing a sound file's path to `~/.claude/speak-prompt-chime`. Existing installs need the new `Notification` block added to `~/.claude/settings.json` (INSTALL.md step 5); the update itself cannot edit that file.
+
+**Reply time on the row and in the voice.** Each reply's deck row and spoken text now open with the time it finished ("[10:50 am] ..."), taken from the item's own timestamp.
+
 ## 1.2.7 (2026-08-25)
 
 **The right-click Mute actually mutes.** The Mute item in the menu-bar right-click menu flipped the setting without stopping the voice, so a reply already speaking talked to the end while the icon claimed silence, and unmuting from the menu did not resume. Both now behave exactly like the speaker button on the full deck: mute pauses on the spot, unmute picks up where it left off.

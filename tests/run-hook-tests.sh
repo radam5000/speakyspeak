@@ -67,9 +67,12 @@ run_post() {  # $1 = transcript, $2 = speech root, $3 = speak-when mode
   rm -f "$THOME/.claude/speak-when"
 }
 
+# Replies open with a "[H:MM am] " stamp since 2026-09-03 (prompts do not);
+# the tests compare the words, so strip it here.
+untime() { sed -E '1s/^\[[0-9]+:[0-9][0-9] [ap]m\] //'; }
 qtext() {  # $1 = speech root -> the text of the single queued manifest, or ""
   local j; j=$(ls "$1/queue/"*.json 2>/dev/null | head -1)
-  [ -n "$j" ] && jq -r .text "$j"
+  [ -n "$j" ] && jq -r .text "$j" | untime
 }
 
 now() { date -u +%Y-%m-%dT%H:%M:%S.000Z; }
@@ -105,7 +108,7 @@ R2="$TDIR/root2"; T2="$TDIR/t2.jsonl"
 run_hook "$T2" "$R2"
 J2=$(ls "$R2/queue/"*.json 2>/dev/null | head -1)
 if [ -n "$J2" ]; then
-  GOT=$(jq -r .text "$J2")
+  GOT=$(jq -r .text "$J2" | untime)
   WANT=$'First part.\n\nSecond part.'   # entries join with a blank line; the cleaner collapses spaces per line, never newlines
   if [ "$GOT" = "$WANT" ]; then ok "gathered both entries"
   else bad "text is '$GOT', expected both entries joined by a blank line"; fi
@@ -130,7 +133,7 @@ printf 'a3' > "$R4/.seen-$SID"
 run_hook "$T4" "$R4"
 J4=$(ls "$R4/queue/"*.json 2>/dev/null | head -1)
 if [ -n "$J4" ]; then
-  GOT=$(jq -r .text "$J4")
+  GOT=$(jq -r .text "$J4" | untime)
   if [ "$GOT" = "Fourth part." ]; then ok "spoke only the post-seen entry"
   else bad "text is '$GOT', expected 'Fourth part.' — the 8/12 repeat bug is back"; fi
 else bad "no queue manifest produced for the resumed turn"; fi
@@ -197,7 +200,7 @@ echo "test 8: Stop after a mid-run speak reads only what is left"
 run_hook "$T7" "$R7"
 N8=$(ls "$R7/queue/"*.json 2>/dev/null | wc -l | tr -d " ")
 LAST8=$(ls -t "$R7/queue/"*.json 2>/dev/null | head -1)
-if [ "$N8" = "2" ] && [ "$(jq -r .text "$LAST8")" = "THE FINAL ANSWER." ]; then
+if [ "$N8" = "2" ] && [ "$(jq -r .text "$LAST8" | untime)" = "THE FINAL ANSWER." ]; then
   ok "Stop spoke the final reply and nothing else"
 else bad "expected 2 queued items ending in the final reply; got $N8, last='$(jq -r .text "$LAST8" 2>/dev/null)'"; fi
 
@@ -276,7 +279,7 @@ if [ "$N11" = "2" ]; then ok "two items survived the overlap"
 else bad "expected 2 queued items, got $N11 — an id collision ate a reply"; fi
 DUP11=0
 for j in "$R11/queue/"*.json; do
-  case $(jq -r .text "$j" 2>/dev/null) in
+  case $(jq -r .text "$j" 2>/dev/null | untime) in
     "THE FINAL ANSWER.") : ;;
     *"THE FINAL ANSWER"*) DUP11=1 ;;   # Stop re-gathered the mid-run text too
   esac
@@ -317,6 +320,27 @@ grep -q "nothing speakable after cleaning" "$R13/hook.log" 2>/dev/null \
   && ok "hook logged the deliberate skip" || bad "expected 'nothing speakable' in hook.log"
 [ "$(cat "$R13/.seen-$SID" 2>/dev/null)" = "a1" ] \
   && ok ".seen advanced past the skipped reply" || bad ".seen not advanced — later Stops will re-poll this reply"
+
+# --- test 14: a permission prompt is chimed and spoken, never .seen-marked --
+# Notification hooks carry no transcript text; the prompt must queue as a
+# normal item whose text names the session and repeats Claude Code's message,
+# and must leave .seen alone (it is not a reply). Any other notification_type
+# stays silent, and the chime plays even when the deck would not.
+echo "test 14: Notification permission_prompt is spoken with a chime, other types stay silent"
+R14="$TDIR/root14"
+run_notify() {  # $1 = notification_type, $2 = speech root
+  printf '{"session_id":"%s","cwd":"%s","session_title":"finance sweep","hook_event_name":"Notification","notification_type":"%s","title":"Permission needed","message":"Claude needs your permission to use Bash"}' \
+    "$SID_FULL" "$PROJ" "$1" \
+    | env HOME="$THOME" PATH="$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$2" bash "$HOOK"
+}
+run_notify permission_prompt "$R14"
+if [ "$(qtext "$R14")" = "Waiting on you in finance sweep. Claude needs your permission to use Bash" ]; then ok "prompt queued with session name + message"
+else bad "prompt text wrong: '$(qtext "$R14")'"; fi
+[ -e "$R14/.seen-$SID" ] && bad ".seen written by a prompt" || ok ".seen untouched"
+R14b="$TDIR/root14b"
+run_notify auth_success "$R14b"
+if ls "$R14b/queue/"*.m4a >/dev/null 2>&1; then bad "auth_success notification was spoken"
+else ok "unrelated notification type stays silent"; fi
 
 echo
 echo "hook tests: $PASS passed, $FAIL failed"

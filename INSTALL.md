@@ -157,6 +157,10 @@ Expected: all four paths exist.
     { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
       "timeout": 600, "async": true }
   ]}],
+  "Notification": [{ "matcher": "permission_prompt|elicitation_dialog|agent_needs_input", "hooks": [
+    { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
+      "timeout": 120, "async": true }
+  ]}],
   "SessionEnd": [{ "matcher": "*", "hooks": [
     { "type": "command", "command": "bash ~/.claude/hooks/session-end.sh" }
   ]}]
@@ -171,6 +175,14 @@ default setting it exits within milliseconds of being called. Wire it now even
 if the user doesn't want mid-run speech yet — then the setting just works later,
 with no second trip into `settings.json`.
 
+The `Notification` entry is what makes a **permission prompt audible**. When
+Claude Code stops to ask "may I run this?", nothing is written to the
+transcript, so without this hook a session parked behind another window just
+waits in silence. With it, the same script plays a chime (Hero, distinct from
+the end-of-reply Glass) and then speaks "Waiting on you in <session>. <what
+Claude asked>" through the deck. Always on, no setting; a different chime can
+be set by writing a sound file's path to `~/.claude/speak-prompt-chime`.
+
 If `~/.claude/settings.json` doesn't exist yet, create it with just:
 ```json
 {
@@ -182,6 +194,10 @@ If `~/.claude/settings.json` doesn't exist yet, create it with just:
     "PostToolUse": [{ "matcher": "*", "hooks": [
       { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
         "timeout": 600, "async": true }
+    ]}],
+    "Notification": [{ "matcher": "permission_prompt|elicitation_dialog|agent_needs_input", "hooks": [
+      { "type": "command", "command": "bash ~/.claude/hooks/speak-reply.sh",
+        "timeout": 120, "async": true }
     ]}],
     "SessionEnd": [{ "matcher": "*", "hooks": [
       { "type": "command", "command": "bash ~/.claude/hooks/session-end.sh" }

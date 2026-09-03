@@ -1,6 +1,6 @@
 # speakyspeak · ROUTINE
 
-This project's recurring checks and jobs (SYSTEM.md). Two kinds: **timed** entries run themselves (launchd/cloud; this file documents them, it does not schedule them). **On-demand** entries run when `/run-proj-routines speakyspeak` or a sweep runs them. Sources at creation (2026-08-24): root `AUTOMATION.md` + the mother-routine registry.
+This project's recurring checks and jobs (SYSTEM.md). Two kinds: **timed** entries run themselves (launchd/cloud; this file documents them, it does not schedule them). **On-demand** entries run when a sweep runs them. Sources at creation (2026-08-24): root `AUTOMATION.md` + the mother-routine registry.
 
 ## Timed
 

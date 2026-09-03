@@ -84,16 +84,41 @@ input=$(cat)
 # spawned after every single tool call and must cost as close to nothing as
 # it can.
 event=$(printf '%s' "$input" | jq -r '.hook_event_name // "Stop"')
+
+# Third entry point (2026-09-03, Adam: "I'm getting a lot of permission
+# questions in various sessions and don't even hear a chime"):
+#
+#   Notification - Claude Code is WAITING ON THE USER: a permission prompt
+#                  (yes/no on a tool call), an elicitation dialog, an agent
+#                  that needs input. Nothing in the transcript announces it,
+#                  so a session parked behind another window just sits there.
+#
+# Play a chime distinct from the end-of-reply one at once (the render below
+# takes a second), then queue the question as a normal item so the deck
+# says which session wants what. No .seen bookkeeping: this text is not in
+# the transcript, and every prompt should be spoken even if it repeats.
+# speak-when is not consulted; a prompt is never "mid-run noise".
+# Chime: ~/.claude/speak-prompt-chime holds a path; absent = Hero.aiff
+# (the Stop chime is Glass.aiff, wired separately in settings.json).
+kind=reply
+if [ "$event" = "Notification" ]; then
+  ntype=$(printf '%s' "$input" | jq -r '.notification_type // empty')
+  case $ntype in permission_prompt|elicitation_dialog|agent_needs_input) ;; *) exit 0 ;; esac
+  kind=notify
+  CHIME=$(cat "$HOME/.claude/speak-prompt-chime" 2>/dev/null || echo "")
+  [ -n "$CHIME" ] || CHIME=/System/Library/Sounds/Hero.aiff
+  [ -f "$CHIME" ] && { afplay "$CHIME" >/dev/null 2>&1 & }
+fi
 WHEN=$(cat "$HOME/.claude/speak-when" 2>/dev/null | tr -d '[:space:]')
 [ -n "$WHEN" ] || WHEN=end
 case $WHEN in end|substantial|all) ;; *) WHEN=end ;; esac
-[ "$event" != "Stop" ] && [ "$WHEN" = end ] && exit 0
+[ "$kind" = reply ] && [ "$event" != "Stop" ] && [ "$WHEN" = end ] && exit 0
 MINWORDS=$(cat "$HOME/.claude/speak-min-words" 2>/dev/null | tr -cd '0-9')
 [ -n "$MINWORDS" ] || MINWORDS=15
 [ "$WHEN" = all ] && MINWORDS=0
 
 t=$(printf '%s' "$input" | jq -r '.transcript_path // empty')
-[ -f "$t" ] || exit 0
+[ "$kind" = notify ] || [ -f "$t" ] || exit 0
 full_sid=$(printf '%s' "$input" | jq -r '.session_id // "session"')
 sid=$(printf '%s' "$full_sid" | cut -c1-8)
 proj=$(basename "$(printf '%s' "$input" | jq -r '.cwd // "project"')" | tr -cd '[:alnum:]._-')
@@ -250,7 +275,19 @@ last_seen=$(cat "$SEEN" 2>/dev/null || echo "")
 # Mid-turn (PostToolUse). Sets $text and falls through to the render pipeline,
 # or exits. The Stop gate below is deliberately not consulted: at PostToolUse
 # time the newest entry is a tool_use, so extract() would return "" every time.
-if [ "$event" != "Stop" ]; then
+uuid=""
+if [ "$kind" = notify ]; then
+  # "Waiting on you in <session>. <what Claude Code said>." The session name
+  # comes first because that is the thing the listener has to go find; the
+  # message is capped so a prompt quoting a long command stays a sentence.
+  nmsg=$(printf '%s' "$input" | jq -r '.message // empty' | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ +//; s/ +$//')
+  [ ${#nmsg} -gt 240 ] && nmsg="${nmsg:0:240}"
+  [ -n "$nmsg" ] || nmsg="Claude Code needs an answer from you."
+  text="Waiting on you in $title. $nmsg"
+  echo "$(date) $sid prompt type=$ntype chars=${#text}" >> "$LOG"
+fi
+
+if [ "$kind" = reply ] && [ "$event" != "Stop" ]; then
   # Parallel tool calls ("Ran 3 shell commands") fire this hook several times
   # at once. Without a mutex each copy reads the same .seen and queues the same
   # words two or three times. Whoever loses the race just exits - nothing is
@@ -273,7 +310,7 @@ if [ "$event" != "Stop" ]; then
   echo "$(date) $sid midturn mode=$WHEN minw=$MINWORDS chars=${#text}" >> "$LOG"
 fi
 
-if [ "$event" = "Stop" ]; then
+if [ "$kind" = reply ] && [ "$event" = "Stop" ]; then
 start_out=$(extract)
 start_uuid=${start_out%%$'\t'*}
 text=""
@@ -392,6 +429,18 @@ id="${stamp}-${sid}"
 CLAIMDIR="$QUEUE/.claim-$id"
 trap cleanup_all EXIT
 
+# Reply time on the deck row AND in the spoken text, derived from `created`
+# (2026-09-03, Adam). This replaces the global "open every substantial reply
+# with [H:MM am]" rule: CC 2.1.246 prints the finish time on the terminal's
+# duration line, so the reply text no longer carries one, and the deck lost
+# its "[10:50 am] TL..." label. Skipped when the text already opens with a
+# stamp (sessions started before the rule was retired).
+tstamp=$(date -r "$stamp" "+%-I:%M %p" | tr 'A-Z' 'a-z')
+case $clean in
+  \[*[0-9]:[0-9][0-9]\ [ap]m\]*) ;;
+  *) [ "$kind" = reply ] && { clean="[$tstamp] $clean"; preview="[$tstamp] $preview"; } ;;
+esac
+
 # wake the deck before rendering so it's already watching when the audio
 # lands — a cold start mid-render used to miss fresh arrivals
 app_ok=1
@@ -477,7 +526,7 @@ if [ "$rendered" != 1 ]; then
     # consume the reply — the stated .seen design is "advances when text is
     # actually spoken". The success path still writes .seen at gate time,
     # which is what keeps concurrent gathers from double-speaking.
-    [ "$(cat "$SEEN" 2>/dev/null)" = "$uuid" ] && printf '%s' "$last_seen" > "$SEEN"
+    [ -n "$uuid" ] && [ "$(cat "$SEEN" 2>/dev/null)" = "$uuid" ] && printf '%s' "$last_seen" > "$SEEN"
     exit 0
   fi
 fi
@@ -501,7 +550,7 @@ else
   # its id slot until the 2-day sweep; roll .seen back (only if still ours)
   # so the reply is not permanently consumed by a failed write
   rm -f "$QUEUE/.tmp-$id.json" "$QUEUE/$id.m4a"
-  [ "$(cat "$SEEN" 2>/dev/null)" = "$uuid" ] && printf '%s' "$last_seen" > "$SEEN"
+  [ -n "$uuid" ] && [ "$(cat "$SEEN" 2>/dev/null)" = "$uuid" ] && printf '%s' "$last_seen" > "$SEEN"
   echo "--- $(date) $sid manifest write failed" >> "$LOG"
   exit 0
 fi
