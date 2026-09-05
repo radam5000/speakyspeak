@@ -578,15 +578,63 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         level = 0
     }
 
+    // System sleep or a vanished output device can freeze AVAudioPlayer
+    // mid-reply with no delegate callback. The deck then says "playing" for
+    // ever, and a peer deck (PeerGate) holds every autoplay on that word:
+    // 2026-09-05 the Air's lid closed 28s into a reply and the Pro held all
+    // its replies for 70 minutes. Progress that stops moving for stallSeconds,
+    // confirmed by a second look 1.5s later, counts as an interrupted finish.
+    private var lastProgressValue: TimeInterval = -1
+    private var stallSuspectAt: Date?
+    private let stallSeconds: Double = 8   // above the 5s maximum lead-in
+    private(set) var lastProgressAt: Date = .distantPast
+
+    // What the peer gate answers with: sound is actually moving, not just
+    // the flag. A stalled player stops counting within 10s even before the
+    // watchdog below has cleared it.
+    var audioFlowing: Bool {
+        isPlaying && Date().timeIntervalSince(lastProgressAt) < 10
+    }
+
     private func tick() {
         guard let p = player else { return }
         if p.isPlaying { lastAudioAt = Date() }   // the route is ours while sound is flowing
         if !scrubbing { progress = p.currentTime }
+        let now = Date()
+        if p.currentTime != lastProgressValue {
+            lastProgressValue = p.currentTime
+            lastProgressAt = now
+            stallSuspectAt = nil
+        } else if isPlaying, now.timeIntervalSince(lastProgressAt) > stallSeconds {
+            // two looks: a player resuming right after wake shows the same
+            // position with a big wall-clock gap and must not be declared dead
+            if let suspect = stallSuspectAt {
+                if now.timeIntervalSince(suspect) > 1.5 { handleStall(p); return }
+            } else {
+                stallSuspectAt = now
+            }
+        }
         p.updateMeters()
         let db = Double(p.averagePower(forChannel: 0))
         let norm = min(1, max(0, (db + 50) / 50))
         // fast attack, slow release — reads as the voice "breathing"
         level = norm > level ? norm : level * 0.90 + norm * 0.10
+    }
+
+    // The stalled reply is filed as played (replay it from its row); nothing
+    // auto-advances from here, so a Mac in dark wake cannot chew through its
+    // queue in silence. The next arrival's maybeAutoplay picks the run back up.
+    private func handleStall(_ p: AVAudioPlayer) {
+        stallSuspectAt = nil
+        let id = currentID ?? "?"
+        dlog(String(format: "stalled at %.0fs of %.0fs (sleep or lost output route), marking %@ finished",
+                    p.currentTime, p.duration, id))
+        stopMeter()
+        p.stop()
+        if let cid = currentID { setState(cid, .done) }
+        isPlaying = false
+        progress = duration
+        NowPlayingBridge.shared.update()
     }
 
     func audioPlayerDidFinishPlaying(_ p: AVAudioPlayer, successfully flag: Bool) {
@@ -944,6 +992,9 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
             p.play()
         }
         lastAudioAt = Date()
+        lastProgressAt = Date()   // fresh start for the stall watchdog
+        lastProgressValue = -1
+        stallSuspectAt = nil
     }
 
     // Resume (or replay) the existing player for the current item — the shared
@@ -1058,7 +1109,9 @@ final class NowPlayingBridge {
 // file = no gating). Each deck also listens on TCP 48765 and answers any
 // connection with "playing\n" or "idle\n", then hangs up. Every check FAILS
 // OPEN — peer off, unreachable, or slow (>0.5s) counts as idle, so a solo or
-// offline machine never silences its own deck.
+// offline machine never silences its own deck. "playing" means sound is
+// actually moving (Deck.audioFlowing), not the flag: a peer frozen mid-reply
+// by lid-close sleep answered "playing" for 70 minutes on 2026-09-05.
 final class PeerGate {
     static let shared = PeerGate()
     private let port: NWEndpoint.Port = 48765
@@ -1082,7 +1135,7 @@ final class PeerGate {
         // exchange is a handful of bytes, nothing here blocks
         l.newConnectionHandler = { conn in
             conn.start(queue: .main)
-            let state = (Deck.shared.isPlaying ? "playing" : "idle") + "\n"
+            let state = (Deck.shared.audioFlowing ? "playing" : "idle") + "\n"
             conn.send(content: state.data(using: .utf8),
                       completion: .contentProcessed { _ in conn.cancel() })
         }

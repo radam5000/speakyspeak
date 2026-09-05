@@ -2,6 +2,10 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.10 (2026-09-05)
+
+**A frozen player no longer holds the other Mac hostage.** Closing the lid (or losing the output device) while a reply is speaking freezes the audio player without telling the app, so the deck kept saying "playing" for as long as it ran. With two Macs sharing one pair of AirPods, the other deck asks its peer before every automatic start and holds while the peer says "playing", so one sleeping laptop silenced every reply on the machine you were actually using, for over an hour, until the app on the sleeping Mac was restarted. Two fixes: the peer answer now means sound is actually moving, not that a flag is set, and the deck watches its own progress, so a reply frozen for about ten seconds is filed as played (replay it from its row) and the app is idle again. Nothing auto-advances from a stall, so a Mac in the dark cannot chew through its queue in silence.
+
 ## 1.2.9 (2026-09-03)
 
 **The installer wires its own hooks.** Until now `install.sh` printed a JSON block and left `~/.claude/settings.json` to you or your Claude, which meant an in-app update could never bring a new hook event to an existing install: 1.2.8's spoken permission prompts silently missed everyone who updated from the menu. `install.sh` now registers all four events itself, add-only (anything already in the file stays exactly as it was, a backup is written first, a second run changes nothing), and since the in-app update runs `install.sh`, updating to 1.2.9 gives you the permission-prompt chime with nothing to paste. The 1.2.8 note below about editing `settings.json` no longer applies.

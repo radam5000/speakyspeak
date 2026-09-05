@@ -49,7 +49,7 @@ git clone https://github.com/radam5000/speakyspeak.git
 cd speakyspeak && ./install.sh
 ```
 
-Then add two hook entries to `~/.claude/settings.json` (`install.sh` prints the exact snippet) and start a new Claude Code session. **[INSTALL.md](INSTALL.md) is the full step-by-step**, including the neural-voice setup and troubleshooting — it's written to be handed to Claude Code, which will run it and adapt it to your setup. ([SETUP.md](SETUP.md) is the older human-readable walkthrough.)
+`install.sh` registers the hooks in `~/.claude/settings.json` for you (add-only, and it backs the file up first), so all that is left is to start a new Claude Code session. **[INSTALL.md](INSTALL.md) is the full step-by-step**, including the neural-voice setup, troubleshooting, and how to uninstall — it's written to be handed to Claude Code, which will run it and adapt it to your setup.
 
 The rest of this README is the architecture and controls reference.
 
@@ -140,9 +140,9 @@ Before rendering, `speak-reply.sh` rewrites the reply into something tuned for t
 
 It's a *light* pass — inline identifiers and prose are left intact; it only strips what reads as gibberish aloud. The same cleaned text feeds the full deck's row preview. Gotcha for future edits: running a nested `s///` inside the perl replacement clobbers `$1` (the captured leading space) — the slash-command rule uses `tr///r` for exactly this reason.
 
-## Status (2026-06-22)
+## Where the history is
 
-Added "quiet without killing the pipeline": skip-as-stop on the transport, an auto-showing mini HUD under the menu-bar icon while speaking (with an X to dismiss it for the current reply), and a system-wide ⌃⌥⌘Space hotkey to silence the current reply (Carbon hotkey, no permission prompt). Also a listenable-text pass in the hook (strips emoji/markdown, speaks slash-commands and paths as words). Earlier (2026-06-15): moved from an always-on-top floating panel to a menu-bar deck (popover on click), added the "Sy" brand mark (menu-bar glyph + app icon), and a settings window fronting the engine/voice dotfiles. Earlier: sequencing + enable/disable hardening (pause-steal, stale-player race, session-end deletions, mute persistence, stop-time ordering, power toggle). Dev history before this repo lives in `git -C ~/.claude log -- tools/speakyspeak tools/claude-speak tools/speech-deck`.
+Release notes for every version are in [CHANGELOG.md](CHANGELOG.md). Dev history from before this repo existed lives in a different repo: `git -C ~/.claude log -- tools/speakyspeak tools/claude-speak tools/speech-deck`.
 
 ## License
 

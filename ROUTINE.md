@@ -15,3 +15,4 @@ This project's recurring checks and jobs (SYSTEM.md). Two kinds: **timed** entri
 |---|---|
 | Feedback ages | `FEEDBACK.md` "Awaiting your OK" — oldest days-waiting leads the report line. |
 | Repo health | `git status` + last commit. |
+| Releasable? | `./verify.sh` — compile, hook fixture tests, the INSTALL.md json blocks, launch smoke, and the docs-sync gate. Green before any release. |

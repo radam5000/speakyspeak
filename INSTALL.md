@@ -280,3 +280,17 @@ Full architecture, controls reference, and settings-window documentation: [READM
 ## Next: hand them the guide
 
 Installation done. Point the user at [GUIDE.md](GUIDE.md) and say what it covers: the `CLAUDE.md` timestamp rule (so a queue of replies says when each was written), the suggested setup for running several sessions at once, and what every setting does. If they run more than one Claude Code session, the sort menu's "Group by: Session" plus "Order by: Oldest first" is the single most useful thing in it.
+
+## Uninstall
+
+Removes everything this file installed. Nothing else on the machine is touched.
+
+```sh
+launchctl bootout gui/$(id -u)/com.adamraabe.speakyspeak-tts 2>/dev/null
+rm -f ~/Library/LaunchAgents/com.adamraabe.speakyspeak-tts.plist
+rm -rf ~/Applications/SpeakySpeak.app /tmp/claude-speech
+rm -f ~/.claude/hooks/speak-reply.sh ~/.claude/hooks/session-end.sh ~/.claude/hooks/tts-daemon.py
+uv tool uninstall mlx-audio 2>/dev/null
+```
+
+Then take SpeakySpeak's hook entries out of `~/.claude/settings.json`. They are the four events shown in step 5, and every one of them names `speak-reply.sh` or `session-end.sh`, so those two names are what to search for. Leave the rest of the file alone. Last, delete the clone (`~/Applications` is the installed copy; the clone is wherever step 1 put it) and the knob files under `~/.claude/` if any were created: `speak-off`, `speak-rate`, `speak-voice`, `speak-voice-kokoro`, `speak-engine`, `speak-when`, `speak-min-words`, `speak-prompt-chime`, `speak-peer`.
