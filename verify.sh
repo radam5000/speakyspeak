@@ -112,6 +112,7 @@ Frosted (classic)|panel styles became Classic/Glassy/Glassier in 1.2.5
 switch it to the classic frosted|panel styles became Classic/Glassy/Glassier in 1.2.5
 Liquid Glass or classic frosted|panel styles became Classic/Glassy/Glassier in 1.2.5
 reading panel|renamed the mini player in 1.2.5
+macOS 14|the stated minimum became 15.6 in 1.2.11 (the build needs the macOS 26 SDK)
 RETIRED
 
 # the guide has to actually cover what Adam asked it to cover

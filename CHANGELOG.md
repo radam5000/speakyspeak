@@ -2,6 +2,10 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.11 (2026-09-11)
+
+**Honest about other setups.** The hook now adds Homebrew's directories to its own PATH, so a Claude Code launched from the Dock (the desktop app, VS Code, Cursor) on a Mac without the built-in `jq` no longer fails in total silence. The stated minimum is now macOS 15.6: it always was, in effect, because the mini player's glass surface needs the macOS 26 SDK to compile and Apple ships those command-line tools for 15.6 and up only; INSTALL.md checks the SDK version before building instead of finding out at step 4. The docs now say the neural voice is English only and point other languages at the macOS voice, and the site no longer claims to work "wherever Claude Code runs": on your Mac, yes; Claude Code on the web or over SSH, no, since the hook has to run where the sound plays.
+
 ## 1.2.10 (2026-09-05)
 
 **A frozen player no longer holds the other Mac hostage.** Closing the lid (or losing the output device) while a reply is speaking freezes the audio player without telling the app, so the deck kept saying "playing" for as long as it ran. With two Macs sharing one pair of AirPods, the other deck asks its peer before every automatic start and holds while the peer says "playing", so one sleeping laptop silenced every reply on the machine you were actually using, for over an hour, until the app on the sleeping Mac was restarted. Two fixes: the peer answer now means sound is actually moving, not that a flag is set, and the deck watches its own progress, so a reply frozen for about ten seconds is filed as played (replay it from its row) and the app is idle again. Nothing auto-advances from a stall, so a Mac in the dark cannot chew through its queue in silence.

@@ -342,6 +342,18 @@ run_notify auth_success "$R14b"
 if ls "$R14b/queue/"*.m4a >/dev/null 2>&1; then bad "auth_success notification was spoken"
 else ok "unrelated notification type stays silent"; fi
 
+# --- test 15: a Dock-launched Claude Code's bare PATH still speaks ----------
+# The desktop app / VS Code / Cursor hand hooks launchd's PATH, not the login
+# shell's: no Homebrew dir. The hook must reach jq and finish the queue
+# contract with only the system dirs (plus the stubs standing in for say/open/
+# afplay). A regression here reads as "installed fine, total silence".
+echo "test 15: the Stop hook completes under a bare Dock-style PATH"
+R15="$TDIR/root15"
+printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T2" "$SID_FULL" "$PROJ" \
+  | env HOME="$THOME" PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin" SPEAKYSPEAK_SPEECH_ROOT="$R15" bash "$HOOK"
+if ls "$R15/queue/"*.json >/dev/null 2>&1; then ok "queued with PATH=$STUB:/usr/bin:/bin:/usr/sbin:/sbin"
+else bad "nothing queued under a bare PATH (hook.log: $(cat "$R15/hook.log" 2>/dev/null | tail -2 | tr '\n' ' '))"; fi
+
 echo
 echo "hook tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

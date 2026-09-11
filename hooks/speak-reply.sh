@@ -6,6 +6,11 @@
 # SPEAKYSPEAK_SPEECH_ROOT exists for the fixture tests in tests/ (isolated
 # queue, no interference with a live deck watching /tmp/claude-speech).
 # Production never sets it; the app hard-codes /tmp/claude-speech.
+# Claude Code launched from the Dock (desktop app, VS Code, Cursor) hands hooks
+# a bare PATH without Homebrew, and macOS 14 has no /usr/bin/jq, so a bare
+# `jq` call there died silently with an empty hook.log. System paths first so
+# the built-in jq on 15+ wins; Homebrew's Apple Silicon and Intel dirs after.
+PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
 SPEECH_ROOT="${SPEAKYSPEAK_SPEECH_ROOT:-/tmp/claude-speech}"
 LOG=$SPEECH_ROOT/hook.log
 QUEUE=$SPEECH_ROOT/queue

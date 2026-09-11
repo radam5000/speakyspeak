@@ -14,6 +14,7 @@ This doc is written as if Claude Code were running in a terminal, because that's
 
 - **Claude Code inside the desktop app, VS Code, or Cursor** — everything here works unchanged, including the shell commands (you run them in your own tool, not in a terminal the user has to open). Hooks and settings live in `~/.claude/` no matter which surface Claude Code runs in, so the hook fires the same way. "Start a new session" in step 7 means a new conversation, a new chat tab, or a new window — whatever counts as starting over in their setup.
 - **Claude Code somewhere other than a Mac** (a Linux box, a remote machine, a web surface) — the app is macOS-only and the hook has to run on the same Mac as the app. Stop and say so rather than half-installing.
+- **Claude replies in a language other than English** — the Kokoro neural voice is English only for now (it installs only the English phoneme pack), so a German or Japanese reply would be read as English sounds. Say so before step 3 and let the user choose: skip step 3 and set `~/.claude/speak-engine` to `say` with a matching macOS voice in `~/.claude/speak-voice` (`say -v ?` lists what is installed), or install the neural voice anyway for English work.
 - **Preferences the user mentions** (a different voice, faster speech, two Macs sharing AirPods) — set the matching knob from the Knobs section at the bottom as part of the install, don't make them come back for it.
 - **A setup that can't run Claude Code hooks at all** — the app itself doesn't care where audio comes from. It plays anything dropped into `/tmp/claude-speech/queue/` as `<epoch>-<sid>.m4a` plus a matching `.json` (the queue contract, documented in [README.md](README.md)). You can write a small producer for whatever tool the user has.
 
@@ -28,12 +29,17 @@ Run each command. All must pass before continuing.
 ```sh
 sw_vers -productVersion
 ```
-Expected: a version number `14.0` or higher.
+Expected: a version number `15.6` or higher. Lower means the macOS 26 SDK cannot be installed, so the build in step 4 fails: stop and tell the user the minimum is macOS 15.6.
 
 ```sh
 xcode-select -p
 ```
 Expected: a path (e.g. `/Library/Developer/CommandLineTools`), not an error. If it errors, run `xcode-select --install`, wait for the GUI installer to finish, then re-run this check.
+
+```sh
+xcrun --show-sdk-version
+```
+Expected: `26.0` or higher. The mini player uses macOS 26 APIs behind availability checks, and an older SDK does not know the symbols, so the build fails on it. If the number is lower, the command-line tools are out of date: `sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install` reinstalls the current ones (needs the user's password, so hand them that line), then re-run this check.
 
 ```sh
 which brew
