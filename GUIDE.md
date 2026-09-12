@@ -41,7 +41,21 @@ Now every spoken reply opens with "three forty-two p m" and a backlog becomes le
 
 None of this is required. One session works fine on its own. This is the setup that made SpeakySpeak worth building.
 
-**A window per project, each its own color.** In iTerm2: Session ▸ Edit Session ▸ Tab Color. When you hear a reply, you already know which window to look at.
+**A window per project, each its own colour.** When you hear a reply, you already know which window to look at. This is how Adam runs it in iTerm2, and your Claude can set it up for you (INSTALL.md offers it once at the end of the install). Four settings make the whole title bar take the colour, with nothing grey left over; set them once, then right-click any window's title bar and pick a colour dot. New windows open uncoloured.
+
+1. Settings ▸ Appearance ▸ General ▸ Theme: **Minimal**.
+2. Settings ▸ Appearance ▸ Tabs ▸ check **Show tab bar even when there is only one tab**.
+3. Settings ▸ Advanced, search `left of the tab bar`, set "In the Minimal theme, should the area left of the tab bar be treated as part of the first tab?" to **Yes**.
+4. Optional: Settings ▸ Advanced, search `new tab button`, set "Remove the new tab button from horizontal tab bars?" to **Yes**, if you never use the + button.
+
+Windows already open keep the old look until you reopen them. The same four from the terminal, with iTerm2 quit first:
+
+```sh
+defaults write com.googlecode.iterm2 TabStyleWithAutomaticOption -int 5
+defaults write com.googlecode.iterm2 HideTab -bool false
+defaults write com.googlecode.iterm2 MinimalTabStyleTreatLeftInsetAsPartOfFirstTab -bool true
+defaults write com.googlecode.iterm2 RemoveAddTabButton -bool true   # the optional step 4
+```
 
 **Name your sessions.** `/rename newsletter` gives that session a name, and the full deck and the mini player use it instead of the folder name. Worth doing when two sessions live in the same repo.
 

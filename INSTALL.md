@@ -15,6 +15,7 @@ This doc is written as if Claude Code were running in a terminal, because that's
 - **Claude Code inside the desktop app, VS Code, or Cursor** — everything here works unchanged, including the shell commands (you run them in your own tool, not in a terminal the user has to open). Hooks and settings live in `~/.claude/` no matter which surface Claude Code runs in, so the hook fires the same way. "Start a new session" in step 7 means a new conversation, a new chat tab, or a new window — whatever counts as starting over in their setup.
 - **Claude Code somewhere other than a Mac** (a Linux box, a remote machine, a web surface) — the app is macOS-only and the hook has to run on the same Mac as the app. Stop and say so rather than half-installing.
 - **Claude replies in a language other than English** — the Kokoro neural voice is English only for now (it installs only the English phoneme pack), so a German or Japanese reply would be read as English sounds. Say so before step 3 and let the user choose: skip step 3 and set `~/.claude/speak-engine` to `say` with a matching macOS voice in `~/.claude/speak-voice` (`say -v ?` lists what is installed), or install the neural voice anyway for English work.
+- **Questions.** Ask the user as little as possible: the language check before step 3 when it applies, and the one terminal question in step 8. Nothing else in this doc needs their answer; check results yourself.
 - **Preferences the user mentions** (a different voice, faster speech, two Macs sharing AirPods) — set the matching knob from the Knobs section at the bottom as part of the install, don't make them come back for it.
 - **A setup that can't run Claude Code hooks at all** — the app itself doesn't care where audio comes from. It plays anything dropped into `/tmp/claude-speech/queue/` as `<epoch>-<sid>.m4a` plus a matching `.json` (the queue contract, documented in [README.md](README.md)). You can write a small producer for whatever tool the user has.
 
@@ -241,6 +242,17 @@ Expected: a `spoke <id> engine=... chars=... secs=...` line per spoken reply (ad
 
 ---
 
+## 8. One question about the terminal, then stop
+
+SpeakySpeak works with any terminal and you have not touched the user's. Adam, who built it, runs one iTerm2 window per project with the whole title bar in that project's colour, so a spoken reply tells you which window to look at. Offer that exactly once, in one plain sentence, and treat silence or a shrug as "keep":
+
+> SpeakySpeak is installed and working. One optional thing: keep your terminal exactly as it is, or set up iTerm2 the way Adam uses it, one coloured window per project? Keeping it as is is fine.
+
+- **Keep:** say nothing more about it. Done.
+- **Set it up:** follow "A window per project, each its own colour" in [GUIDE.md](GUIDE.md): the four `defaults write` lines with iTerm2 quit (skip the optional fourth unless they want the + button gone), then tell them how to colour a window: right-click its title bar, pick a colour dot. If iTerm2 is not installed, `brew install --cask iterm2` first, and only with their yes.
+
+Do not attach other questions to this one. The whole install asks the user two things at most (the language check before step 3, and this).
+
 ## Logs
 
 - `/tmp/claude-speech/hook.log` — the Stop hook (per-reply render)
@@ -290,7 +302,7 @@ Full architecture, controls reference, and settings-window documentation: [READM
 
 ## Next: hand them the guide
 
-Installation done. Point the user at [GUIDE.md](GUIDE.md) and say what it covers: the `CLAUDE.md` timestamp rule (so a queue of replies says when each was written), the suggested setup for running several sessions at once, and what every setting does. If they run more than one Claude Code session, the sort menu's "Group by: Session" plus "Order by: Oldest first" is the single most useful thing in it.
+Installation done (step 8 asked and answered). Point the user at [GUIDE.md](GUIDE.md) and say what it covers: the `CLAUDE.md` timestamp rule (so a queue of replies says when each was written), the suggested setup for running several sessions at once, and what every setting does. If they run more than one Claude Code session, the sort menu's "Group by: Session" plus "Order by: Oldest first" is the single most useful thing in it.
 
 ## Uninstall
 

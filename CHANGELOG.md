@@ -2,6 +2,10 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.15 (2026-09-12)
+
+**The install ends with one optional question about your terminal.** After everything works, the installing Claude asks once whether to keep your terminal exactly as it is or set up iTerm2 the way Adam uses it, one coloured window per project so a spoken reply tells you where to look. Keeping it is the default and nothing else is asked. GUIDE.md now carries the exact recipe (four iTerm2 settings, or four `defaults write` lines) for anyone who wants it later.
+
 ## 1.2.14 (2026-09-12)
 
 **A way to keep scheduled Claude jobs out of the deck.** If you run Claude Code headless on a schedule (a launchd or cron job calling `claude -p`), its working lines were read aloud like any session's, which in the "As it works, every line" mode meant a 5am job narrating itself. The job can now export `SPEAKYSPEAK_QUIET=1` and the hook exits immediately for that process only. Nothing changes for your interactive sessions, and the existing `speak-off` file stays the global switch. GUIDE.md has the row.
