@@ -3308,6 +3308,10 @@ final class SettingsStore: ObservableObject {
     // "end" is the hook's default too, so write nothing for it — an absent file
     // and the string "end" must stay interchangeable (speak-reply.sh line ~79).
     @Published var speakWhen: SpeakWhen = .end     { didSet { guard !loading else { return }; writeOrRemove("speak-when", speakWhen == .end ? "" : speakWhen.rawValue) } }
+    // Every track opens with its session name (Adam, 2026-09-12: several
+    // sessions in a row and no way to tell which is talking). Flag file read
+    // by the hook at render time, so it applies from the next reply on.
+    @Published var nameFirst: Bool = false          { didSet { guard !loading else { return }; setFlag("speak-name-first", present: nameFirst) } }
     // Changing this repaints the whole app: Theme.accent reads the cached
     // value, and every view that observes SettingsStore redraws. The menu-bar
     // icon is AppKit and redraws through the notification below.
@@ -3374,6 +3378,7 @@ final class SettingsStore: ObservableObject {
         sayVoice = read("speak-voice")
         sayRate = read("speak-rate")
         speakWhen = SpeakWhen(rawValue: read("speak-when")) ?? .end
+        nameFirst = FileManager.default.fileExists(atPath: path("speak-name-first"))
         loading = false
     }
 
@@ -3772,6 +3777,8 @@ struct SettingsView: View {
                 Picker("Read replies", selection: $settings.speakWhen) {
                     ForEach(SpeakWhen.allCases) { Text($0.label).tag($0) }
                 }
+                Toggle("Say the session name first", isOn: $settings.nameFirst)
+                    .accessibilityHint("Each reply opens with its session name, so you can tell which project is talking.")
             }
             // Speed, Volume and Mute used to have a Playback section here.
             // They are all on the deck's own panel, a click away, so a second
@@ -4086,6 +4093,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var bag = Set<AnyCancellable>()
     private lazy var syGlyph = makeSyGlyph()
     private var appearanceWatch: NSKeyValueObservation?
+    private var drawnAppearance: NSAppearance.Name?
     private var quietHotKey: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -4140,8 +4148,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // above, but a wallpaper-driven menu bar does not, so watch the
             // property itself: it changes when the item lands in the bar, when
             // the wallpaper's tone changes, and on theme toggles.
-            appearanceWatch = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
-                DispatchQueue.main.async { self?.refreshStatus() }
+            // Redraw only when the appearance differs from the one the icon
+            // was last drawn with. Without that guard this observer fed
+            // itself: setting button.image re-fires the KVO, refreshStatus
+            // redraws, and the deck sat at ~95% CPU while idle (1.2.13, both
+            // Macs, found 2026-09-12 within hours; the Air burned 14 CPU
+            // minutes in 14 minutes with an empty queue).
+            appearanceWatch = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] btn, _ in
+                guard let self, btn.effectiveAppearance.name != self.drawnAppearance else { return }
+                DispatchQueue.main.async { self.refreshStatus() }
             }
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.toolTip = "SpeakySpeak"
@@ -4331,6 +4346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.image = statusImage(base: syGlyph, count: queued,
                                        silenced: silenced, on: button)
         }
+        drawnAppearance = button.effectiveAppearance.name
 
         var parts: [String] = []
         var tip = stateTooltip(deck, queued: queued)

@@ -452,6 +452,18 @@ case $clean in
   *) [ "$kind" = reply ] && { clean="[$tstamp] $clean"; preview="[$tstamp] $preview"; } ;;
 esac
 
+# Say the session first (Adam, 2026-09-12: several sessions speaking in a row
+# and no way to tell which one is talking). ~/.claude/speak-name-first exists =
+# every track opens with the session's name: the /rename title, else the
+# folder name with hyphens and underscores spoken as spaces. Mid-turn entries
+# too, since each is its own track; not the Notification path, which already
+# says "Waiting on you in <session>". The preview line is left alone, the
+# row shows the name already. Settings ▸ Speech ▸ "Say the session name first".
+if [ "$kind" = reply ] && [ -f "$HOME/.claude/speak-name-first" ]; then
+  name=$(printf '%s' "${title:-$proj}" | tr '_-' '  ')
+  clean="$name. $clean"
+fi
+
 # wake the deck before rendering so it's already watching when the audio
 # lands — a cold start mid-render used to miss fresh arrivals
 app_ok=1

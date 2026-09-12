@@ -1,10 +1,10 @@
 # SpeakySpeak — TODO
 
-updated: 2026-09-12 · by: session (1.2.12, 1.2.13, 1.2.14 shipped; headless runs silenced) · prior: 2026-09-12 sweep
+updated: 2026-09-12 · by: session (1.2.12 to 1.2.15 shipped; headless runs silenced; install terminal question) · prior: 2026-09-12 sweep
 
 ## Dash (2026-09-12)
 
-- Three releases today, all on both Macs (Pro relaunch pending for 1.2.14, nothing in the app itself changed): 1.2.12 survives Apple's new command-line tools, 1.2.13 fixes the menu-bar Sy launching invisible, 1.2.14 keeps the scheduled morning Claude jobs out of the deck
+- Four releases today: 1.2.12 survives Apple's new command-line tools, 1.2.13 fixes the menu-bar Sy launching invisible, 1.2.14 keeps the scheduled morning Claude jobs out of the deck, 1.2.15 lets a new install offer your iTerm2 setup in one question. Air is on 1.2.15; the Pro will offer 1.2.15, take it or ignore it, the app itself is unchanged since 1.2.13
 - Check tomorrow: nothing should be read aloud at 5:00, 7:30, 7:45 or 8:00. If something is, say so
 - VoiceOver is still the one thing blocking a launch post. The two hands-on checks (unplug the external display, listen to the site audio on your phone) are still open
 
@@ -33,6 +33,7 @@ updated: 2026-09-12 · by: session (1.2.12, 1.2.13, 1.2.14 shipped; headless run
 
 ## Done
 
+- [x] 2026-09-12 ss-terminal-question · Adam: new users and their Claude should get a clear, ultra-simple path to his iTerm2 setup without being overwhelmed. 1.2.15: INSTALL step 8 asks one sentence at the end (keep your terminal, or set up iTerm2 Adam's way), default keep, budget stated as two questions per install; GUIDE.md carries the four-setting recipe from the Air session's handoff. Docs only; Air on 1.2.15.
 - [x] 2026-09-12 ss-headless-runs-spoken · Adam: "silence them". 1.2.14: the hook exits at once when SPEAKYSPEAK_QUIET is set (per process, test 16, GUIDE row); the four headless runners export it (bin/morning-sweep.sh 05:00, markemark daily-triage 07:30 and beta-feedback 08:00, speakyspeak daily-feedback 07:45), each committed in its own repo. Live hook on the Pro via install.sh; Air on 1.2.14. Check: tomorrow's hook.log has no lines for those runs.
 - [x] 2026-09-12 ss-menubar-invisible-launch · 1.2.13 shipped: Adam's Air screenshots after the 1.2.12 relaunch showed the Sy invisible in the menu bar unless clicked (black on a dark bar). Cause: the hand-tinted mark picks its colour from the button's appearance at first draw, before the menu bar has settled it, and only queue events redraw it, so a launch into an empty queue stuck. Proven live twice: one forced redraw made it reappear (cause), then 1.2.13's appearance watch showed it right after the same SSH relaunch (fix, Adam's eyes). Pro still on 1.2.11 until Adam updates it.
 - [x] 2026-09-12 ss-clt27-build-break · 1.2.12 shipped the same morning as Adam's report: build.sh now probes the default SDK and falls back to the macOS 26 SDK that Command Line Tools 27.0 still ship (scripts/pick-sdk.sh, 13 contract tests in verify.sh); INSTALL step 0 checks a 26 SDK exists. Proven on the Air's real CLT 27 toolchain, then the Air pulled and installed over SSH, deck relaunched on 1.2.12 at 10:00. Root cause and evidence: HISTORY.md 2026-09-12.

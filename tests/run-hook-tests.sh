@@ -364,6 +364,19 @@ if ls "$R16/queue/"*.json >/dev/null 2>&1; then bad "queued despite SPEAKYSPEAK_
 else ok "nothing queued"; fi
 [ -e "$R16/hook.log" ] && bad "hook.log written; the quiet exit should cost nothing" || ok "no hook.log written"
 
+# ~/.claude/speak-name-first = every track opens with the session name (the
+# folder name when the session has no title), spoken and stored in `text`.
+echo "test 17: speak-name-first puts the session name at the front of the text"
+R17="$TDIR/root17"; touch "$THOME/.claude/speak-name-first"
+run_hook "$T2" "$R17"
+rm -f "$THOME/.claude/speak-name-first"
+want="$(basename "$PROJ" | tr '_-' '  ')."
+got=$(cat "$R17/queue/"*.json 2>/dev/null | jq -r '.text' | head -1 | cut -c1-${#want})
+[ "$got" = "$want" ] && ok "text opens with '$want'" || bad "text opens with '$got', wanted '$want'"
+R17b="$TDIR/root17b"; run_hook "$T2" "$R17b"
+got=$(cat "$R17b/queue/"*.json 2>/dev/null | jq -r '.text' | head -1 | cut -c1-${#want})
+[ "$got" != "$want" ] && ok "without the knob the name is not added" || bad "name added without the knob"
+
 echo
 echo "hook tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

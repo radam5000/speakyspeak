@@ -59,6 +59,8 @@ defaults write com.googlecode.iterm2 RemoveAddTabButton -bool true   # the optio
 
 **Name your sessions.** `/rename newsletter` gives that session a name, and the full deck and the mini player use it instead of the folder name. Worth doing when two sessions live in the same repo.
 
+**Hear which session is talking.** Settings ▸ Speech ▸ **Say the session name first**. Every reply then opens with its session name (the `/rename` name, or the folder), so when several sessions speak in a row you know which project each one is about without looking.
+
 **Start long runs, then walk away.** Set Read replies to "As it works, skipping short lines" and you'll hear the steps that matter without hearing "Let me check that."
 
 **Clear the list before you walk away.** While you're at the computer reading everything as it lands, pause playback. When you kick off runs and leave, clear the list first (the trash on the Up next line, or the sweep for just the played ones): once you've read everything there's no harm in it, and every reply you hear after that is news, not backlog.
@@ -135,6 +137,7 @@ The Settings window writes plain files in `~/.claude/`, so shell edits and the G
 | File | What it does |
 | --- | --- |
 | `speak-off` | Exists = nothing is rendered at all. A hard kill from the shell. |
+| `speak-name-first` | Exists = every reply opens with its session name. Settings ▸ Speech ▸ Say the session name first. |
 | `SPEAKYSPEAK_QUIET=1` (an environment variable, not a file) | Set in a process, the hook exits at once for that Claude Code run only. For headless jobs (`claude -p` under launchd or cron) whose working narration you do not want read aloud; interactive sessions are unaffected. |
 | `speak-when` | `end`, `substantial`, or `all`. Absent means `end`. |
 | `speak-min-words` | Word threshold for `substantial` mode. Default 15. |

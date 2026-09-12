@@ -2,6 +2,12 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.16 (2026-09-12)
+
+**A fix for 1.2.13: the app no longer burns a CPU core while idle.** The appearance watch added in 1.2.13 fed itself (redrawing the icon re-fired the watch), so the app sat near 100% CPU from launch. It now redraws only when the menu bar's appearance actually differs from the one the icon was drawn with.
+
+**Hear which session is talking.** New in Settings ▸ Speech: "Say the session name first". Every reply then opens with its session name, the `/rename` name if you gave it one, otherwise the folder, so when several sessions speak in a row you know which project each one is about without looking up. Off by default. Applies from the next reply on; already-queued audio is unchanged.
+
 ## 1.2.15 (2026-09-12)
 
 **The install ends with one optional question about your terminal.** After everything works, the installing Claude asks once whether to keep your terminal exactly as it is or set up iTerm2 the way Adam uses it, one coloured window per project so a spoken reply tells you where to look. Keeping it is the default and nothing else is asked. GUIDE.md now carries the exact recipe (four iTerm2 settings, or four `defaults write` lines) for anyone who wants it later.
