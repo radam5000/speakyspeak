@@ -4085,6 +4085,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var pulsePhase: CGFloat = 0
     private var bag = Set<AnyCancellable>()
     private lazy var syGlyph = makeSyGlyph()
+    private var appearanceWatch: NSKeyValueObservation?
     private var quietHotKey: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -4128,6 +4129,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.font = .systemFont(ofSize: 11, weight: .semibold)
             button.target = self
             button.action = #selector(statusClicked(_:))
+            // The icon is tinted by hand against the button's effective
+            // appearance (statusImage), and that appearance is not final at
+            // launch: the first refreshStatus() runs before the menu bar has
+            // told the button how dark it is, so over a dark wallpaper the
+            // mark came out black on black and stayed that way until the next
+            // queue event redrew it. The Air sat like that for 20 minutes on
+            // 2026-09-12 (relaunched into an empty queue; one forced redraw
+            // fixed it). Theme toggles fire the distributed notification
+            // above, but a wallpaper-driven menu bar does not, so watch the
+            // property itself: it changes when the item lands in the bar, when
+            // the wallpaper's tone changes, and on theme toggles.
+            appearanceWatch = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+                DispatchQueue.main.async { self?.refreshStatus() }
+            }
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.toolTip = "SpeakySpeak"
         }

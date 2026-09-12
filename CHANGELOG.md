@@ -2,6 +2,10 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.13 (2026-09-12)
+
+**The menu-bar mark no longer vanishes after a launch into an empty queue.** The Sy is tinted by hand so the queue count can sit in orange on top of it, and that tint was picked once at launch, before the menu bar had said how dark it is. Over a dark wallpaper the mark came out black on black and stayed invisible until the next reply redrew it, which in an empty queue could be never. The app now watches the button's own appearance and redraws the moment it settles, and again whenever the wallpaper or theme changes it.
+
 ## 1.2.12 (2026-09-12)
 
 **Builds again under Apple's newest command-line tools.** Command Line Tools for Xcode 27.0 started arriving through Software Update on 2026-09-11 and cannot compile SwiftUI on their own: the compiler plugin behind `@State` ships only inside full Xcode, so the build died with a wall of "'self' is immutable" errors and the in-app update reported "a step failed (rc=1)". The build script now checks the default SDK first and, when that probe fails, compiles against the macOS 26 SDK the 27.0 tools still include. Macs with full Xcode selected build exactly as before. If no macOS 26 SDK is present, the build stops and spells out the two ways out. Found on Adam's own second Mac the morning the tools landed.
