@@ -48,7 +48,13 @@ cp VERSION "$APP/Contents/Resources/VERSION"
 # refused to launch below 26 while Info.plist advertised 14.0. Everything newer
 # than 14 is already behind #available checks (Liquid Glass falls back to the
 # frosted card), so the two now agree. uname -m keeps Intel Macs building x86_64.
-swiftc -O -target "$(uname -m)-apple-macosx14.0" main.swift -o "$APP/Contents/MacOS/SpeakySpeak"
+# Command Line Tools 27.0 cannot compile SwiftUI by themselves (the @State
+# macro's plugin ships only inside Xcode), but still carry the macOS 26 SDK;
+# pick-sdk.sh answers "" on a healthy toolchain and a -sdk path when the
+# default fails its probe. Why + the failure it fixes: scripts/pick-sdk.sh.
+SDK=$(bash scripts/pick-sdk.sh) || exit 1
+SDKFLAG=(); [ -n "$SDK" ] && SDKFLAG=(-sdk "$SDK")
+swiftc -O ${SDKFLAG[@]+"${SDKFLAG[@]}"} -target "$(uname -m)-apple-macosx14.0" main.swift -o "$APP/Contents/MacOS/SpeakySpeak"
 codesign --force -s - "$APP"
 
 mkdir -p "$HOME/Applications"

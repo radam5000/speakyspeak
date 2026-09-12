@@ -2,6 +2,10 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.12 (2026-09-12)
+
+**Builds again under Apple's newest command-line tools.** Command Line Tools for Xcode 27.0 started arriving through Software Update on 2026-09-11 and cannot compile SwiftUI on their own: the compiler plugin behind `@State` ships only inside full Xcode, so the build died with a wall of "'self' is immutable" errors and the in-app update reported "a step failed (rc=1)". The build script now checks the default SDK first and, when that probe fails, compiles against the macOS 26 SDK the 27.0 tools still include. Macs with full Xcode selected build exactly as before. If no macOS 26 SDK is present, the build stops and spells out the two ways out. Found on Adam's own second Mac the morning the tools landed.
+
 ## 1.2.11 (2026-09-11)
 
 **Honest about other setups.** The hook now adds Homebrew's directories to its own PATH, so a Claude Code launched from the Dock (the desktop app, VS Code, Cursor) on a Mac without the built-in `jq` no longer fails in total silence. The stated minimum is now macOS 15.6: it always was, in effect, because the mini player's glass surface needs the macOS 26 SDK to compile and Apple ships those command-line tools for 15.6 and up only; INSTALL.md checks the SDK version before building instead of finding out at step 4. The docs now say the neural voice is English only and point other languages at the macOS voice, and the site no longer claims to work "wherever Claude Code runs": on your Mac, yes; Claude Code on the web or over SSH, no, since the hook has to run where the sound plays.

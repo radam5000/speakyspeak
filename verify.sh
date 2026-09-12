@@ -34,6 +34,8 @@ bash tests/run-hook-tests.sh
 res $? "tests/run-hook-tests.sh"
 bash tests/run-wire-tests.sh
 res $? "tests/run-wire-tests.sh (settings.json add-only merge)"
+bash tests/run-sdk-tests.sh
+res $? "tests/run-sdk-tests.sh (SDK fallback under Command Line Tools 27)"
 
 step "4. INSTALL.md JSON blocks parse"
 JB=0; JBAD=0

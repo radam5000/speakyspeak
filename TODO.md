@@ -1,13 +1,16 @@
 # SpeakySpeak — TODO
 
-## Dash (2026-09-05)
+updated: 2026-09-12 · by: sweep (Air update failure root-caused to CLT 27.0; headless runs spoken filed) · prior: 2026-09-11 morning sweep
 
-- 1.2.10 is out (9/05): a deck frozen by lid-close sleep no longer holds the other Mac's autoplay (stall watchdog + honest peer answer). 1.2.9 (9/03) wired its own hooks and spoke permission prompts. Both launchd jobs are alive, the TTS daemon and the 7:45 feedback triage
-- VoiceOver is the one thing blocking a launch post. Your report: it basically doesn't work, and the windows are likely unreachable
-- Two short checks need your hands: unplug the external display and confirm the mini player comes back on the built-in screen, and listen to the speakyspeak.com audio on your phone for the reverb you heard on 8/17
+## Dash (2026-09-12)
+
+- The Air cannot update to 1.2.11 and your report this morning is right. Apple's new command-line tools (27.0) broke the build on any Mac without full Xcode. The cause is found and a one-file fix is ready to ship as 1.2.12. Say go
+- Your Pro's app has been paused mid-reply since yesterday 3:35pm, so new replies queue but do not play. Press play or skip if that is not on purpose
+- VoiceOver is still the one thing blocking a launch post. The two hands-on checks (unplug the external display, listen to the site audio on your phone) are still open
 
 ## Inbox
 
+- [ ] ss-headless-runs-spoken ·→you· **The three headless launchd Claude runs are read aloud.** In "As it works, every line" mode the Stop hook cannot tell a `claude -p` job from a terminal session, so today's 05:00 sweep-all (7 lines), 07:30 markemark loop (1) and 07:45 feedback loop (1) all went into the deck ("Starting the daily feedback-loop run…"). No recorded decision either way. If unwanted: the runner scripts export one env var (e.g. SPEAKYSPEAK_QUIET=1) and the hook exits early on it. If wanted as a morning heartbeat, mark [~]. Found by sweep 2026-09-12.
 - [ ] ss-two-way-handoff ·→you· **Air-to-Pro peer handoff is probably pointing at a stale IP.** The Air's `speak-peer` file names the Pro as Tailscale 100.78.253.70; the 9/08 stall fix (1.2.10) made the Air stop waiting on the Pro, so one-way works. 9/10 (sweep #22): `tailscale status` on the Pro shows ambpro = 100.78.253.70, so the Air's file is NOT stale; if the handoff still fails the cause is elsewhere. Left: one live two-way test. (from session, 2026-09-08)
 - [ ] ss-loop-can-check-site ·→you· the feedback loop cannot check the live site, so it can only verify a reporter's claim about speakyspeak.com against the repo source. Came up 2026-08-20 (a spam "your Install button is broken" claim; checked and false). Fix if you want it: add `"WebFetch(domain:speakyspeak.com)"` to CLAUDE_ALLOWED_TOOLS in scripts/loop/daily-feedback.sh:204. Read-only, one domain. Needs your OK (from loop, 2026-08-20)
 - [ ] ss-cassette-theme ·→you· Adam's idea 2026-08-25: an old-school audio-cassette look as a switchable theme — mini player as "the Walkman", the popover as "the tape deck", scrubbing/tape noises on seek. PARKED INDEFINITELY (Adam, 2026-08-25 release-pass quiz) — no date, revisit only if he raises it.
@@ -18,11 +21,12 @@
 - [ ] ss-paste-first-why ·→claude· **A friend's 8/18 install-determinism critique ("people want an install script, AI is non-deterministic") plus Adam's own question about script-maintenance burden never got a FEEDBACK.md row** — three sibling items from the same day did. Materially answered (install.sh exists, INSTALL.md is the deterministic walkthrough); the missing piece is the recorded why-paste-first, which a launch reviewer will re-litigate. Fix: one FEEDBACK.md row. From transcript-mining 8/29 (SUMMARY.md).
 
 ## Now
+- [ ] ss-clt27-build-break ·→claude· — **The Air's update to 1.2.11 fails, and every Command-Line-Tools-only install breaks the same way** (Adam's report to hi@, 9/12 08:57; loop sees it 9/13). Cause: CLT 27.0 landed on the Air 9/12 08:53; its SDK 27 makes @State a macro whose SwiftUIMacros plugin the CLT lacks (upstream drumih/turbo-fieldfare#121). Verified: the 26.5 SDK still inside CLT 27.0 typechecks clean. Fix = 1.2.12: build.sh picks an SDK whose SwiftUI typechecks, INSTALL step 0 stops passing 27, verify fixture. Air: clone 1.2.11, app 1.2.10. Needs Adam's go; evidence in HISTORY.md.
 - [ ] ss-hud-display-change ·→you· — **needs 2 minutes of your hardware.** Plug in the external display, drag the mini player onto it, unplug: it should reappear on the built-in screen. The fix shipped in 1.2.0 (commit aceeccb, 2026-08-21: a screen-parameters observer re-runs the panel's positioning) and verify.sh is green, but a real disconnect is the only thing that can prove it. The item's own wrong turn on 8/28, and the correction, are in HISTORY.md.
 - [ ] ss-voiceover-audit ·→claude· — **VoiceOver barely works on the app** (Adam, 2026-08-25: "doesn't really seem to work basically at all"). An investigation, not a checklist walk. The probe that night showed the menu-bar item IS exposed with its label, so labels reach the accessibility layer; the likely gap is VoiceOver never getting INTO the popover or the mini player (LSUIElement app, transient NSPopover, nonactivating borderless NSPanel). Start there with live VoiceOver plus Accessibility Inspector. Goal state: tests/VOICEOVER-CHECKLIST.md. Blocks any launch post.
 
 ## Next
-- [ ] ss-reddit-karma ·→you· — Adam builds u/radamradam past 50 karma (genuine comments in r/ClaudeAI, r/macapps) so the week-3 r/ClaudeAI launch post clears the gate. Repo age gates clear ~2026-08-30.
+- [ ] ss-reddit-karma ·→you· — Adam builds u/radamradam past 50 karma (genuine comments in r/ClaudeAI, r/macapps) so the week-3 r/ClaudeAI launch post clears the gate. The repo-age gate (~2026-08-30) has passed, so nothing external blocks the launch post any more; the karma is the only gate left. Checked 2026-09-11 (morning sweep): no superseding decision in git, no karma work recorded. 🔁 next check 2026-09-25.
 - [ ] ss-github-release ·→claude· — cut a GitHub release with a zipped .app (~1h; unblocks MacUpdate, Homebrew tap, directories).
 - [ ] ss-launch — execute PLAN-LAUNCH.md Part 1 (r/ClaudeAI first, PH Wed/Thu week 3-4, Show HN week 4+). Remaining decisions in the plan's decision list (PH date, skip list, notarization, privacy policy, plugin marketplace).
 - [ ] ss-a11y-page — dedicated accessibility page idea (parked 2026-08-17 when the visible transcript expander was pulled; sr-only transcript remains in the page).
