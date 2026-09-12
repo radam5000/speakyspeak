@@ -2,6 +2,10 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.14 (2026-09-12)
+
+**A way to keep scheduled Claude jobs out of the deck.** If you run Claude Code headless on a schedule (a launchd or cron job calling `claude -p`), its working lines were read aloud like any session's, which in the "As it works, every line" mode meant a 5am job narrating itself. The job can now export `SPEAKYSPEAK_QUIET=1` and the hook exits immediately for that process only. Nothing changes for your interactive sessions, and the existing `speak-off` file stays the global switch. GUIDE.md has the row.
+
 ## 1.2.13 (2026-09-12)
 
 **The menu-bar mark no longer vanishes after a launch into an empty queue.** The Sy is tinted by hand so the queue count can sit in orange on top of it, and that tint was picked once at launch, before the menu bar had said how dark it is. Over a dark wallpaper the mark came out black on black and stayed invisible until the next reply redrew it, which in an empty queue could be never. The app now watches the button's own appearance and redraws the moment it settles, and again whenever the wallpaper or theme changes it.

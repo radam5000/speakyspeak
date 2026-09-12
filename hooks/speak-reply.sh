@@ -18,6 +18,12 @@ RENDER=$SPEECH_ROOT/render           # warm TTS daemon's request queue
 ALIVE="$RENDER/daemon.alive"         # daemon heartbeat; hook only uses it when fresh
 APP="$HOME/Applications/SpeakySpeak.app"
 [ -f "$HOME/.claude/speak-off" ] && exit 0
+# Per-process silence for headless runs: launchd/cron jobs that run `claude -p`
+# export SPEAKYSPEAK_QUIET=1 so their working narration never reaches the deck
+# (Adam, 2026-09-12: the 5:00 sweep and the 7:30/7:45/8:00 loops were all
+# being read aloud in "every line" mode). speak-off is the global switch; this
+# one is inherited only by the job that set it. No log line: it must cost nothing.
+[ -n "${SPEAKYSPEAK_QUIET:-}" ] && exit 0
 # no speak-rate file = the voice's natural pace, so the deck's 1× is true 1×
 RATE=$(cat "$HOME/.claude/speak-rate" 2>/dev/null || echo "")
 VOICE=$(cat "$HOME/.claude/speak-voice" 2>/dev/null || echo "")

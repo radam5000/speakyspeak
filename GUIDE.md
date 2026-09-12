@@ -121,6 +121,7 @@ The Settings window writes plain files in `~/.claude/`, so shell edits and the G
 | File | What it does |
 | --- | --- |
 | `speak-off` | Exists = nothing is rendered at all. A hard kill from the shell. |
+| `SPEAKYSPEAK_QUIET=1` (an environment variable, not a file) | Set in a process, the hook exits at once for that Claude Code run only. For headless jobs (`claude -p` under launchd or cron) whose working narration you do not want read aloud; interactive sessions are unaffected. |
 | `speak-when` | `end`, `substantial`, or `all`. Absent means `end`. |
 | `speak-min-words` | Word threshold for `substantial` mode. Default 15. |
 | `speak-engine` | `kokoro` or `say`. Absent picks Kokoro when it's installed. |

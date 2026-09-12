@@ -1,10 +1,10 @@
 # SpeakySpeak — TODO
 
-updated: 2026-09-12 · by: session (1.2.12 shipped, Air updated; ss-clt27-build-break done) · prior: 2026-09-12 sweep
+updated: 2026-09-12 · by: session (1.2.12 + 1.2.13 shipped, Air on 1.2.13) · prior: 2026-09-12 sweep
 
 ## Dash (2026-09-12)
 
-- 1.2.12 shipped this morning. Apple's new command-line tools (27.0) broke the build on any Mac without full Xcode; the fix is out, the Air is updated and running it. Nothing in the app itself changed, so your Pro needs no relaunch
+- Two releases this morning. 1.2.12: Apple's new command-line tools (27.0) broke the build on any Mac without full Xcode, fixed. 1.2.13: the menu-bar Sy could launch invisible over a dark wallpaper, fixed and confirmed on the Air. Your Pro still runs 1.2.11: use Update in Settings when convenient
 - Your Pro's app has been paused mid-reply since yesterday 3:35pm, so new replies queue but do not play. Press play or skip if that is not on purpose
 - VoiceOver is still the one thing blocking a launch post. The two hands-on checks (unplug the external display, listen to the site audio on your phone) are still open
 
@@ -34,6 +34,7 @@ updated: 2026-09-12 · by: session (1.2.12 shipped, Air updated; ss-clt27-build-
 
 ## Done
 
+- [x] 2026-09-12 ss-menubar-invisible-launch · 1.2.13 shipped: Adam's Air screenshots after the 1.2.12 relaunch showed the Sy invisible in the menu bar unless clicked (black on a dark bar). Cause: the hand-tinted mark picks its colour from the button's appearance at first draw, before the menu bar has settled it, and only queue events redraw it, so a launch into an empty queue stuck. Proven live twice: one forced redraw made it reappear (cause), then 1.2.13's appearance watch showed it right after the same SSH relaunch (fix, Adam's eyes). Pro still on 1.2.11 until Adam updates it.
 - [x] 2026-09-12 ss-clt27-build-break · 1.2.12 shipped the same morning as Adam's report: build.sh now probes the default SDK and falls back to the macOS 26 SDK that Command Line Tools 27.0 still ship (scripts/pick-sdk.sh, 13 contract tests in verify.sh); INSTALL step 0 checks a 26 SDK exists. Proven on the Air's real CLT 27 toolchain, then the Air pulled and installed over SSH, deck relaunched on 1.2.12 at 10:00. Root cause and evidence: HISTORY.md 2026-09-12.
 - [x] 2026-09-11 — 1.2.11 shipped, the other-setups pass. Adam decided the build floor question in one line ("raise the minimum"): every doc now says macOS 15.6, because the mini player's glass code needs the macOS 26 SDK and Apple ships those command-line tools for 15.6 and up only; INSTALL step 0 checks `xcrun --show-sdk-version` >= 26 before the build can fail at step 4. Hook adds Homebrew dirs to its own PATH (fixture test 15 runs the Stop hook under launchd's bare PATH). Docs and site say the neural voice is English only and point other languages at the say engine; INSTALL tells the installing Claude to ask before step 3. Site's "Works wherever Claude Code runs" scoped to the user's Mac with the web app and SSH named as out, plus which surfaces are hand-tested (terminal, desktop app) vs on mechanism (VS Code, Cursor). Closes ss-build-min-macos, ss-hook-jq-path, ss-english-only, ss-setup-matrix, ss-cloud-claim. Friend installs on foreign setups: Adam said not now; the only field evidence is still his own two Macs.
 - [x] 2026-09-05 — 1.2.10 shipped: Adam reported the Pro deck not advancing (16:11). Cause: the Air's deck froze mid-reply at 14:59 when its lid closed (pmset Clamshell Sleep), AVAudioPlayer never fired its finish callback, so PeerGate on the Air answered "playing" for 70+ minutes and the Pro held every autoplay (deck.log: "peer deck speaking — holding autoplay" on repeat). Fix: peer answer = Deck.audioFlowing (progress moved within 10s), plus a stall watchdog in tick() (8s no progress + 1.5s confirm → filed as played, no auto-advance). Pro relaunched on 1.2.10. Air updated over SSH at 16:25 on its third retry (woke on its own): 1.2.10 installed, deck relaunched with autoplay held, peer port now answers "idle".

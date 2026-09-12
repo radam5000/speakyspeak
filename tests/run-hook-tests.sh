@@ -354,6 +354,16 @@ printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T2" "$SID_FULL"
 if ls "$R15/queue/"*.json >/dev/null 2>&1; then ok "queued with PATH=$STUB:/usr/bin:/bin:/usr/sbin:/sbin"
 else bad "nothing queued under a bare PATH (hook.log: $(cat "$R15/hook.log" 2>/dev/null | tail -2 | tr '\n' ' '))"; fi
 
+# A headless job (launchd `claude -p`) exports SPEAKYSPEAK_QUIET=1; the same
+# transcript that queues in test 2 must queue nothing and log nothing.
+echo "test 16: SPEAKYSPEAK_QUIET=1 silences the run"
+R16="$TDIR/root16"
+printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T2" "$SID_FULL" "$PROJ" \
+  | env HOME="$THOME" PATH="$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R16" SPEAKYSPEAK_QUIET=1 bash "$HOOK"
+if ls "$R16/queue/"*.json >/dev/null 2>&1; then bad "queued despite SPEAKYSPEAK_QUIET=1"
+else ok "nothing queued"; fi
+[ -e "$R16/hook.log" ] && bad "hook.log written; the quiet exit should cost nothing" || ok "no hook.log written"
+
 echo
 echo "hook tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
