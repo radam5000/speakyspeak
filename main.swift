@@ -4094,6 +4094,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private lazy var syGlyph = makeSyGlyph()
     private var appearanceWatch: NSKeyValueObservation?
     private var drawnAppearance: NSAppearance.Name?
+    private var appearanceCheck: DispatchWorkItem?
+    private func scheduleAppearanceCheck() {
+        appearanceCheck?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, let button = self.statusItem?.button,
+                  button.effectiveAppearance.name != self.drawnAppearance else { return }
+            self.refreshStatus()
+        }
+        appearanceCheck = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: item)
+    }
     private var quietHotKey: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -4148,15 +4159,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // above, but a wallpaper-driven menu bar does not, so watch the
             // property itself: it changes when the item lands in the bar, when
             // the wallpaper's tone changes, and on theme toggles.
-            // Redraw only when the appearance differs from the one the icon
-            // was last drawn with. Without that guard this observer fed
-            // itself: setting button.image re-fires the KVO, refreshStatus
-            // redraws, and the deck sat at ~95% CPU while idle (1.2.13, both
-            // Macs, found 2026-09-12 within hours; the Air burned 14 CPU
-            // minutes in 14 minutes with an empty queue).
-            appearanceWatch = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] btn, _ in
-                guard let self, btn.effectiveAppearance.name != self.drawnAppearance else { return }
-                DispatchQueue.main.async { self.refreshStatus() }
+            // Never act on the change itself, only on what is true a moment
+            // later. AppKit renders a status item's replicant snapshot by
+            // calling setAppearance: on the button, drawing, and setting it
+            // back, and every setImage schedules such a snapshot. Acting on
+            // each KVO fire therefore fed itself (1.2.13: ~95% CPU while
+            // idle on both Macs, found 2026-09-12; 1.2.16's "only if the
+            // name differs" guard did not hold because during the flip the
+            // name really does differ, sample(1) showed the exact chain).
+            // A coalesced check 0.4s later reads the settled appearance: a
+            // transient flip has been undone by then and nothing happens; a
+            // real change (the launch settle, a wallpaper that darkens the
+            // bar, a theme toggle) still differs and triggers one redraw.
+            appearanceWatch = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+                self?.scheduleAppearanceCheck()
             }
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.toolTip = "SpeakySpeak"

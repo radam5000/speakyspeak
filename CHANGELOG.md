@@ -2,6 +2,10 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.17 (2026-09-12)
+
+**The idle CPU fix, properly this time.** 1.2.16 said it fixed the app sitting near 100% CPU; it did not. The cause turned out to be AppKit itself: to draw a menu-bar item's snapshot it briefly switches the button to the other appearance and back, and every icon redraw asks for a new snapshot, so "redraw when the appearance changes" chased its own tail. The app now waits a moment after any appearance change and redraws only if the settled appearance really differs from the one the icon was drawn with. Measured after relaunch on an idle Mac.
+
 ## 1.2.16 (2026-09-12)
 
 **A fix for 1.2.13: the app no longer burns a CPU core while idle.** The appearance watch added in 1.2.13 fed itself (redrawing the icon re-fired the watch), so the app sat near 100% CPU from launch. It now redraws only when the menu bar's appearance actually differs from the one the icon was drawn with.
