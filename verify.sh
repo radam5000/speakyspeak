@@ -6,9 +6,9 @@
 # §2.4/§2.5). Steps, in order of cheapness:
 #   1. shell + python syntax on the hooks
 #   2. ./build.sh — the single-file swiftc compile
-#   3. the four hook-contract fixture tests (tests/run-hook-tests.sh) — the
-#      contracts that have historically regressed; ~70s, silence-is-pass
-#      windows included
+#   3. the contract fixture tests — hooks, settings merge, SDK fallback, and
+#      the mini player's drag (tests/*.sh); the contracts that have
+#      historically regressed; ~70s, silence-is-pass windows included
 #   4. every ```json block in INSTALL.md parses (the copy-paste settings
 #      snippet must never ship malformed)
 #   5. launch smoke: the built app stays alive 5s and leaves no fresh crash
@@ -36,6 +36,8 @@ bash tests/run-wire-tests.sh
 res $? "tests/run-wire-tests.sh (settings.json add-only merge)"
 bash tests/run-sdk-tests.sh
 res $? "tests/run-sdk-tests.sh (SDK fallback under Command Line Tools 27)"
+bash tests/run-panel-drag-test.sh
+res $? "tests/run-panel-drag-test.sh (the mini player still drags)"
 
 step "4. INSTALL.md JSON blocks parse"
 JB=0; JBAD=0

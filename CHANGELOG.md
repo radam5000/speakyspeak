@@ -2,6 +2,10 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.18 (2026-09-14)
+
+**The mini player can be dragged again on macOS 27.** On macOS 27 the panel sat frozen wherever it last was: macOS used to move a window like this for the app whenever you pressed its background and pulled, and on 27 it stopped doing that for the mini player. SpeakySpeak now moves the panel itself, so the drag works the same on every macOS and cannot be taken away again. The transport keys and the progress line are unchanged: a press there still presses or seeks, it never moves the panel. If your panel is somewhere odd after the upgrade, drag it back once and it stays.
+
 ## 1.2.17 (2026-09-12)
 
 **The idle CPU fix, properly this time.** 1.2.16 said it fixed the app sitting near 100% CPU; it did not. The cause turned out to be AppKit itself: to draw a menu-bar item's snapshot it briefly switches the button to the other appearance and back, and every icon redraw asks for a new snapshot, so "redraw when the appearance changes" chased its own tail. The app now waits a moment after any appearance change and redraws only if the settled appearance really differs from the one the icon was drawn with. Measured after relaunch on an idle Mac.

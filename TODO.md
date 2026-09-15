@@ -1,11 +1,11 @@
 # SpeakySpeak — TODO
 
-updated: 2026-09-12 · by: session (1.2.12 to 1.2.15 shipped; headless runs silenced; install terminal question) · prior: 2026-09-12 sweep
+updated: 2026-09-14 · by: session (1.2.18: mini player drags again on macOS 27; public release held for Adam's one drag test) · prior: 2026-09-12 (1.2.12 to 1.2.17)
 
 ## Dash (2026-09-12)
 
-- Four releases today: 1.2.12 survives Apple's new command-line tools, 1.2.13 fixes the menu-bar Sy launching invisible, 1.2.14 keeps the scheduled morning Claude jobs out of the deck, 1.2.15 lets a new install offer your iTerm2 setup in one question. Air is on 1.2.15; the Pro will offer 1.2.15, take it or ignore it, the app itself is unchanged since 1.2.13
-- Check tomorrow: nothing should be read aloud at 5:00, 7:30, 7:45 or 8:00. If something is, say so
+- Six releases today, all on 1.2.17 now: your two Macs build again under Apple's new tools, the menu-bar Sy no longer launches invisible, morning jobs are silent, installs offer your iTerm2 setup once, every reply can open with its session name (on for you), and a CPU bug from this morning's fix is closed. Quit and reopen the app on the Pro to leave the buggy 1.2.13 process
+- Check tomorrow: nothing read aloud at 5:00, 7:30, 7:45 or 8:00, and replies open with the session name
 - VoiceOver is still the one thing blocking a launch post. The two hands-on checks (unplug the external display, listen to the site audio on your phone) are still open
 
 ## Inbox
@@ -33,6 +33,10 @@ updated: 2026-09-12 · by: session (1.2.12 to 1.2.15 shipped; headless runs sile
 
 ## Done
 
+- [x] 2026-09-14 ss-hud-stuck-macos27 · Adam upgraded to macOS 27 and the mini player would not move. macOS no longer starts the background drag for the panel (proven: mouse-down at the card background is delivered to the hosting view and the window stays put), so 1.2.18 does the drag in the app. Transport keys, the X and the progress line opt out with .noWindowDrag(), which matters now that the panel follows the cursor. New gate: tests/run-panel-drag-test.sh in verify.sh, checked to fail against the old code. Built, installed and running on the Pro; **your one check: drag the panel by its background.**
+
+- [x] 2026-09-12 ss-name-first · Adam: "I'm listening to a bunch of different things and can't tell which one it's talking about." 1.2.16: Settings ▸ Speech ▸ "Say the session name first" (flag ~/.claude/speak-name-first, hook prefixes reply and mid-turn tracks with the /rename title or folder name; test 17). Switched on for Adam on the Pro; Air has it available.
+- [x] 2026-09-12 ss-idle-cpu-loop · Found while shipping the above: 1.2.13's appearance watch fed itself through AppKit's status-item snapshot (setAppearance flip on every setImage), both decks near 100% CPU while idle. 1.2.16's name guard did not hold (sampled); 1.2.17 acts only on the appearance settled 0.4s later. Measured: Air 0.0% CPU after relaunch (was 95%). Built and verified on the Air because the Pro (load ~500) killed the local build for memory; Air-built app copied to the Pro's Applications. Pro relaunch = Adam.
 - [x] 2026-09-12 ss-terminal-question · Adam: new users and their Claude should get a clear, ultra-simple path to his iTerm2 setup without being overwhelmed. 1.2.15: INSTALL step 8 asks one sentence at the end (keep your terminal, or set up iTerm2 Adam's way), default keep, budget stated as two questions per install; GUIDE.md carries the four-setting recipe from the Air session's handoff. Docs only; Air on 1.2.15.
 - [x] 2026-09-12 ss-headless-runs-spoken · Adam: "silence them". 1.2.14: the hook exits at once when SPEAKYSPEAK_QUIET is set (per process, test 16, GUIDE row); the four headless runners export it (bin/morning-sweep.sh 05:00, markemark daily-triage 07:30 and beta-feedback 08:00, speakyspeak daily-feedback 07:45), each committed in its own repo. Live hook on the Pro via install.sh; Air on 1.2.14. Check: tomorrow's hook.log has no lines for those runs.
 - [x] 2026-09-12 ss-menubar-invisible-launch · 1.2.13 shipped: Adam's Air screenshots after the 1.2.12 relaunch showed the Sy invisible in the menu bar unless clicked (black on a dark bar). Cause: the hand-tinted mark picks its colour from the button's appearance at first draw, before the menu bar has settled it, and only queue events redraw it, so a launch into an empty queue stuck. Proven live twice: one forced redraw made it reappear (cause), then 1.2.13's appearance watch showed it right after the same SSH relaunch (fix, Adam's eyes). Pro still on 1.2.11 until Adam updates it.

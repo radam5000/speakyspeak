@@ -1254,16 +1254,23 @@ struct SpeechSwirl: View {
 
 // MARK: - Scrubber
 
-// The panel sets isMovableByWindowBackground, and in a non-activating panel
-// AppKit wins the drag — the window moves instead of the knob. A leaf AppKit
-// view under a draggable control vetoes window movement so the SwiftUI
-// gesture gets the events.
+// "This is a control, not panel background." A drag that starts on a marked
+// view scrubs or presses; it never moves the mini player. Two readers, because
+// which one is live depends on the macOS:
+//   • up to macOS 26, AppKit ran the panel drag itself and honored the leaf
+//     view's mouseDownCanMoveWindow
+//   • on macOS 27 AppKit no longer starts that drag at all, so
+//     ClickThroughHostingView runs it and reads these markers itself
+//     (vetoesDrag, which walks the subtree — see its note)
 final class NoWindowDragNSView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
 }
 struct NoWindowDrag: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { NoWindowDragNSView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
+}
+extension View {
+    func noWindowDrag() -> some View { background(NoWindowDrag()) }
 }
 
 struct Scrubber: View {
@@ -1305,7 +1312,7 @@ struct Scrubber: View {
             .onHover { hovering = $0 }
         }
         .frame(height: 16)
-        .background(NoWindowDrag())
+        .noWindowDrag()
         // Shapes plus a DragGesture are not an accessibility element, so
         // VoiceOver had no stop here at all: no position, no way to seek.
         // The adjustable action makes VO up/down seek in 10s steps, matching
@@ -1356,7 +1363,7 @@ struct VolumeSlider: View {
             .onHover { hovering = $0 }
         }
         .frame(width: 52, height: 16)
-        .background(NoWindowDrag())
+        .noWindowDrag()
         .help("Volume")
         // labeled but previously inert to VoiceOver: no value, no way to
         // change it. VO up/down now steps 5% at a time.
@@ -2764,6 +2771,7 @@ struct MiniDeckView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .noWindowDrag()
                     .help("Dismiss. It pops back up with the next reply")
                     .accessibilityLabel("Hide the mini player")
                 }
@@ -2792,6 +2800,7 @@ struct MiniDeckView: View {
                         .shadow(color: Theme.accent.opacity(0.35), radius: 4, y: 1)
                     }
                     .buttonStyle(.plain)
+                    .noWindowDrag()
                     .help(deck.isPlaying ? "Pause" : "Play")
                     .accessibilityLabel(deck.isPlaying ? "Pause" : "Play")
                     miniButton("goforward.10", theme, glass: glass) { deck.skip(10) }
@@ -2839,9 +2848,9 @@ struct MiniDeckView: View {
     // A thin glowing progress line at the bottom — how far into the reply you
     // are, and a scrubber: drag anywhere along it to seek. Three details make
     // it work in a floating panel:
-    //   • NoWindowDrag() vetoes the panel's isMovableByWindowBackground, which
-    //     otherwise wins the drag and moves the window instead of the playhead
-    //     (same fix as the full deck's Scrubber)
+    //   • .noWindowDrag() marks the line as a control, so a drag here seeks
+    //     instead of moving the panel (same marker as the full deck's Scrubber;
+    //     ClickThroughHostingView reads it)
     //   • the hit target is 14pt tall against a 3–4pt line, pulled back to the
     //     original layout height with negative padding so the card doesn't grow
     //   • seek() fires on END, not per frame — writing AVAudioPlayer.currentTime
@@ -2893,7 +2902,7 @@ struct MiniDeckView: View {
         // 4pt to the VStack so the panel's fittingSize (and the ~84pt card)
         // is unchanged. Drop this line if the card should just get taller.
         .padding(.vertical, -5)
-        .background(NoWindowDrag())
+        .noWindowDrag()
         // same story as the full deck's Scrubber: shapes + gesture were no
         // accessibility element at all — VO could neither hear the position
         // nor seek. VO up/down seeks in 10s steps.
@@ -2928,6 +2937,9 @@ struct MiniDeckView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // a drag that starts on a key presses the key; only the card's own
+        // background moves the panel
+        .noWindowDrag()
         .help(Self.hint(for: symbol))
         // .help() is only the VO hint; without a label these were bare
         // unnamed buttons to VoiceOver
@@ -2957,11 +2969,84 @@ struct MiniDeckView: View {
 
 // A nonactivating panel won't make its buttons clickable on first hit unless the
 // hosting view accepts the first mouse — without this you'd have to click twice.
+//
+// It also MOVES THE PANEL. macOS 27 took the AppKit freebie away: setting
+// isMovableByWindowBackground used to mean a press on the card's background was
+// swallowed by AppKit and dragged the window, and on 27 that never fires — the
+// hosting view gets the mouse-down instead, so the mini player sat frozen
+// wherever it last was (Adam, 2026-09-14, first day on macOS 27). Probe
+// evidence behind this fix (scratch probes, same day):
+//   • NSHostingView hit-tests as ONE view — its hitTest answers "me" at every
+//     point of the card, even directly over a NoWindowDrag marker
+//   • a mouse-down dispatched at the card background is DELIVERED to it rather
+//     than being taken for a window drag
+// So the drag is ours now: same feel, one code path on every macOS, nothing for
+// the next OS to take away. isMovableByWindowBackground stays on — where AppKit
+// does run the drag it never delivers the mouse-down, so the two can never both
+// move the panel.
+// Covered by tests/run-panel-drag-test.sh, which extracts the block below.
+// <<<panel-drag
 final class ClickThroughHostingView<V: View>: NSHostingView<V> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     required init(rootView: V) { super.init(rootView: rootView) }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    private var grabScreen: NSPoint?     // cursor in screen coords at mouse-down
+    private var grabOrigin: NSPoint = .zero
+    private var moving = false
+
+    override func mouseDown(with event: NSEvent) {
+        moving = false
+        grabScreen = nil
+        if let w = window, w.isMovableByWindowBackground,
+           !vetoesDrag(at: convert(event.locationInWindow, from: nil)) {
+            grabScreen = w.convertPoint(toScreen: event.locationInWindow)
+            grabOrigin = w.frame.origin
+        }
+        super.mouseDown(with: event)   // SwiftUI still gets every click
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        super.mouseDragged(with: event)
+        guard let grab = grabScreen, let w = window else { return }
+        // locationInWindow moves with the window, so converting back to screen
+        // gives the cursor's true position however far the panel has travelled
+        let now = w.convertPoint(toScreen: event.locationInWindow)
+        let dx = now.x - grab.x, dy = now.y - grab.y
+        // a click with a shiver in it stays a click
+        if !moving && (dx * dx + dy * dy) < 9 { return }
+        moving = true
+        w.setFrameOrigin(NSPoint(x: grabOrigin.x + dx, y: grabOrigin.y + dy))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        grabScreen = nil
+        moving = false
+        super.mouseUp(with: event)
+    }
+
+    // Is this point on a control that opted out with .noWindowDrag()?
+    // AppKit can't answer that for us: it asks the HIT view, and the hit view
+    // is always this one (see the note above), so walk the subtree and look for
+    // our own marker. Deliberately OUR type and not any view answering false to
+    // mouseDownCanMoveWindow: SwiftUI's private scaffolding is free to answer
+    // however it likes, and one internal view spanning the card would otherwise
+    // veto every drag. Containment is tested on the marker alone — SwiftUI hangs
+    // these off zero-sized container views, so an ancestor-by-ancestor walk
+    // would miss every one of them.
+    private func vetoesDrag(at point: NSPoint) -> Bool {
+        func walk(_ v: NSView) -> Bool {
+            for sub in v.subviews where !sub.isHidden {
+                if sub is NoWindowDragNSView,
+                   sub.bounds.contains(sub.convert(point, from: self)) { return true }
+                if walk(sub) { return true }
+            }
+            return false
+        }
+        return walk(self)
+    }
 }
+// panel-drag>>>
 
 // Owns the floating HUD panel: positions it under the status button, fades it in
 // while speaking and out when quiet. It never activates the app or steals focus
@@ -3024,9 +3109,11 @@ final class MiniHUDController {
         // a titleless borderless panel is anonymous in VoiceOver's window
         // list; the label names it there without drawing anything
         p.setAccessibilityLabel("The mini player")
-        // draggable anywhere: grab the background (the transport buttons are
-        // discrete taps, so they still click — only a click-and-move on empty
-        // space moves the panel). No SwiftUI drag gestures live here to fight it.
+        // draggable anywhere: grab the background (the transport keys and the
+        // progress line opt out with .noWindowDrag(), so they still press and
+        // scrub — only a click-and-move on the card itself moves the panel).
+        // The drag is run by ClickThroughHostingView; this flag is what tells it
+        // (and, up to macOS 26, AppKit) that this window may be moved that way.
         p.isMovableByWindowBackground = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         p.contentView = h
