@@ -45,7 +45,7 @@ Expected: `26.0` or higher. The mini player uses macOS 26 APIs behind availabili
 ```sh
 ls "$(dirname "$(xcrun --show-sdk-path)")"
 ```
-Expected: at least one `MacOSX26` entry (e.g. `MacOSX26.5.sdk`), whatever else is listed. Apple's Command Line Tools 27.0 cannot compile SwiftUI on their own (the compiler plugin behind `@State` ships only inside Xcode), so the build script compiles against the macOS 26 SDK that sits next to the 27.0 one; with full Xcode selected the default SDK is used as before. If no macOS 26 SDK is listed, the build cannot run: either install Xcode from the App Store and run `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer` (needs the user's password, hand them the line), or install "Command Line Tools for Xcode 26" from https://developer.apple.com/download/all/ and re-run this check.
+Expected: at least one `MacOSX26` entry or newer (e.g. `MacOSX26.5.sdk`, `MacOSX27.sdk`), whatever else is listed. The build script tries the default SDK first and only falls back if it cannot compile SwiftUI, so a full Xcode install just builds with its own SDK. The fallback exists for command-line-tools-only machines: Apple's Command Line Tools 27.0 cannot compile SwiftUI on their own (the compiler plugin behind `@State` ships only inside Xcode), and the macOS 26 SDK they still carry compiles it fine. If nothing from macOS 26 on is listed, the build cannot run: either install Xcode from the App Store and run `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer` (needs the user's password, hand them the line), or install "Command Line Tools for Xcode 26" from https://developer.apple.com/download/all/ and re-run this check.
 
 ```sh
 which brew
