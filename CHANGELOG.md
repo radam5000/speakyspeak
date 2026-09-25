@@ -2,6 +2,20 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.19 (2026-09-25)
+
+**Scripted Claude runs stay quiet.** A `claude -p` run (a commit-message script, a cron job, anything scheduled) or a program built on the Agent SDK is no longer read aloud. Claude Code marks these runs itself, so nothing needs setting up. The terminal, the desktop app, VS Code and Cursor are read exactly as before. If you chat through an app that runs Claude with `claude -p`, turn on Settings ▸ Speech ▸ "Read scripted runs too". `hook.log` says when it quieted a run and why.
+
+**Updates keep your own changes.** SpeakySpeak invites you to have Claude change it, and until now any change in your copy made every update fail. The updater now sets your edits aside, updates, and puts them back on top; commits you made are replayed on top of the update. If your change and the update touch the same lines, nothing is changed, and Settings offers a prompt that has your Claude merge the two. A hook edited in place in `~/.claude/hooks` is kept next to the new one as `.mine-<date>` instead of being overwritten without a word.
+
+**Works on Macs set up differently from mine.** Replies were silently dropped on Macs with GNU command-line tools first on the PATH (Homebrew's coreutils), which many developers use. A folder named "café app" lost its accent (and a Japanese name came out blank) when Claude Code ran from the desktop app or an editor. An app moved out of `~/Applications` played each reply twice at once. A `CLAUDE_CONFIG_DIR` setup got hooks registered in a file Claude Code never reads. All fixed, each with a test. Queued reply text in `/tmp` is now readable by your account only.
+
+**Easier listening.** Table divider lines are no longer read out, short paths like `src/app/page.tsx` are read as "page.tsx", and a typed `->` is read as "to". Every reply already opens with the time it finished, so the old `CLAUDE.md` timestamp rule is no longer needed (it still works if you have it).
+
+**Lighter on macOS 27.** On the macOS 27 SDK the app grew about 5 MB a minute while speaking and used most of a core; the playback meter no longer redraws views that never change. The mini player hides again after a reply when set to "Only while speaking", and the rainbow glow holds still after five minutes instead of animating all night. The voice helper's log no longer fills with tracebacks or keeps reply text.
+
+**Claude usage in the deck (optional).** Settings ▸ Claude can show your Claude plan usage, status.claude.com and your Claude Code version along the bottom of the deck and the mini player. Off by default, because it uses your Claude Code sign-in to ask Anthropic for your usage.
+
 ## 1.2.18 (2026-09-14)
 
 **The mini player can be dragged again on macOS 27.** On macOS 27 the panel sat frozen wherever it last was: macOS used to move a window like this for the app whenever you pressed its background and pulled, and on 27 it stopped doing that for the mini player. SpeakySpeak now moves the panel itself, so the drag works the same on every macOS and cannot be taken away again. The transport keys and the progress line are unchanged: a press there still presses or seeks, it never moves the panel. If your panel is somewhere odd after the upgrade, drag it back once and it stays.

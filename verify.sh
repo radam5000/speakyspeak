@@ -5,13 +5,14 @@
 # mode refuses to ship on anything but a clean exit here (PLAN-LAUNCH.md
 # §2.4/§2.5). Steps, in order of cheapness:
 #   1. shell + python syntax on the hooks
-#   2. ./build.sh — the single-file swiftc compile
-#   3. the contract fixture tests — hooks, settings merge, SDK fallback, and
-#      the mini player's drag (tests/*.sh); the contracts that have
+#   2. ./build.sh --no-install — the single-file swiftc compile, left in
+#      ./SpeakySpeak.app so the installed (maybe running) app is never touched
+#   3. the contract fixture tests — hooks, settings merge, SDK fallback, the
+#      mini player's drag, and updates over a user's own edits (tests/*.sh); the contracts that have
 #      historically regressed; ~70s, silence-is-pass windows included
 #   4. every ```json block in INSTALL.md parses (the copy-paste settings
 #      snippet must never ship malformed)
-#   5. launch smoke: the built app stays alive 5s and leaves no fresh crash
+#   5. launch smoke: the just-built ./SpeakySpeak.app stays alive 5s and leaves no fresh crash
 #      report. Skipped when SpeakySpeak is already running (we never quit a
 #      live deck out from under the user).
 set -u
@@ -26,8 +27,8 @@ bash -n hooks/speak-reply.sh;                    res $? "bash -n speak-reply.sh"
 if [ -f hooks/tts-daemon.py ]; then python3 -m py_compile hooks/tts-daemon.py; res $? "py_compile tts-daemon.py"; fi
 
 step "2. build"
-./build.sh > /tmp/speakyspeak-verify-build.log 2>&1
-res $? "build.sh (log: /tmp/speakyspeak-verify-build.log)"
+./build.sh --no-install > /tmp/speakyspeak-verify-build.log 2>&1
+res $? "build.sh --no-install (log: /tmp/speakyspeak-verify-build.log)"
 
 step "3. hook-contract fixture tests"
 bash tests/run-hook-tests.sh
@@ -38,6 +39,10 @@ bash tests/run-sdk-tests.sh
 res $? "tests/run-sdk-tests.sh (SDK fallback under Command Line Tools 27)"
 bash tests/run-panel-drag-test.sh
 res $? "tests/run-panel-drag-test.sh (the mini player still drags)"
+bash tests/run-update-tests.sh
+res $? "tests/run-update-tests.sh (updates keep the user's own changes)"
+bash -n scripts/update.sh && bash -n scripts/keep-edited-hooks.sh
+res $? "bash -n update.sh + keep-edited-hooks.sh"
 
 step "4. INSTALL.md JSON blocks parse"
 JB=0; JBAD=0
@@ -63,7 +68,7 @@ if pgrep -x SpeakySpeak >/dev/null 2>&1; then
   echo "--- PASS: launch smoke (skipped: app in use)"
 else
   BEFORE=$(ls ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -c SpeakySpeak)
-  open "$HOME/Applications/SpeakySpeak.app"
+  open "$PWD/SpeakySpeak.app"
   sleep 5
   ALIVE=0; pgrep -x SpeakySpeak >/dev/null 2>&1 && ALIVE=1
   AFTER=$(ls ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -c SpeakySpeak)
@@ -117,6 +122,7 @@ switch it to the classic frosted|panel styles became Classic/Glassy/Glassier in 
 Liquid Glass or classic frosted|panel styles became Classic/Glassy/Glassier in 1.2.5
 reading panel|renamed the mini player in 1.2.5
 macOS 14|the stated minimum became 15.6 in 1.2.11 (the build needs the macOS 26 SDK)
+timestamp rule|the hook stamps every reply itself since 1.2.8; no CLAUDE.md rule needed
 RETIRED
 
 # the guide has to actually cover what Adam asked it to cover

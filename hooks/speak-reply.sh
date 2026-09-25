@@ -11,6 +11,19 @@
 # `jq` call there died silently with an empty hook.log. System paths first so
 # the built-in jq on 15+ wins; Homebrew's Apple Silicon and Intel dirs after.
 PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
+# Many developers put GNU coreutils first on PATH (Homebrew's gnubin), where
+# `date -j`, `date -r <epoch>` and `stat -f %m` mean something else or fail.
+# Under gnubin the fast-flush age check read every reply as ancient, so most
+# replies were dropped as "no fresh text" (14 of 31 hook tests failed,
+# 2026-09-25). The BSD tools are called by absolute path for that reason.
+# The locale is pinned for the same kind of reason: a Dock-launched Claude
+# Code has no LANG, so tr and ${#var} worked in bytes and a folder named
+# "café-app" became "caf-app" (a Japanese name became empty), and a German
+# locale printed no am/pm for the reply time.
+export LC_ALL=en_US.UTF-8
+# The queue holds every reply's full text in /tmp, and /tmp is shared by every
+# account on the Mac: owner-only files, so another login cannot read them.
+umask 077
 SPEECH_ROOT="${SPEAKYSPEAK_SPEECH_ROOT:-/tmp/claude-speech}"
 LOG=$SPEECH_ROOT/hook.log
 QUEUE=$SPEECH_ROOT/queue
@@ -24,6 +37,18 @@ APP="$HOME/Applications/SpeakySpeak.app"
 # being read aloud in "every line" mode). speak-off is the global switch; this
 # one is inherited only by the job that set it. No log line: it must cost nothing.
 [ -n "${SPEAKYSPEAK_QUIET:-}" ] && exit 0
+# Scripted runs are quiet by default for everyone (2026-09-25). Claude Code
+# marks them itself: `claude -p` runs with CLAUDE_CODE_ENTRYPOINT=sdk-cli, and
+# Agent SDK programs with sdk-ts or sdk-py. Interactive surfaces are cli,
+# claude-desktop, claude-vscode, local-agent, so they are untouched. Without
+# this, anyone's commit-message script or cron job was read aloud; only jobs
+# that knew to set SPEAKYSPEAK_QUIET were silent. An app that drives
+# `claude -p` as its chat window is the one case that wants these read:
+# ~/.claude/speak-headless (Settings ▸ Speech) turns them back on.
+HEADLESS=""
+case ${CLAUDE_CODE_ENTRYPOINT:-} in
+  sdk-*) [ -f "$HOME/.claude/speak-headless" ] || HEADLESS=$CLAUDE_CODE_ENTRYPOINT ;;
+esac
 # no speak-rate file = the voice's natural pace, so the deck's 1× is true 1×
 RATE=$(cat "$HOME/.claude/speak-rate" 2>/dev/null || echo "")
 VOICE=$(cat "$HOME/.claude/speak-voice" 2>/dev/null || echo "")
@@ -95,6 +120,15 @@ input=$(cat)
 # spawned after every single tool call and must cost as close to nothing as
 # it can.
 event=$(printf '%s' "$input" | jq -r '.hook_event_name // "Stop"')
+# One log line per quieted run (at its Stop), so "why is it silent" has an
+# answer in hook.log; the per-tool-call events exit without a trace.
+if [ -n "$HEADLESS" ]; then
+  if [ "$event" = Stop ]; then
+    mkdir -p "$SPEECH_ROOT"
+    echo "$(date) $(printf '%s' "$input" | jq -r '.session_id // "?"' | cut -c1-8) scripted run ($HEADLESS) not read aloud; touch ~/.claude/speak-headless to hear these" >> "$LOG"
+  fi
+  exit 0
+fi
 
 # Third entry point (2026-09-03, Adam: "I'm getting a lot of permission
 # questions in various sessions and don't even hear a chime"):
@@ -132,7 +166,10 @@ t=$(printf '%s' "$input" | jq -r '.transcript_path // empty')
 [ "$kind" = notify ] || [ -f "$t" ] || exit 0
 full_sid=$(printf '%s' "$input" | jq -r '.session_id // "session"')
 sid=$(printf '%s' "$full_sid" | cut -c1-8)
-proj=$(basename "$(printf '%s' "$input" | jq -r '.cwd // "project"')" | tr -cd '[:alnum:]._-')
+# perl, not tr: GNU tr (gnubin) is byte-based even in a UTF-8 locale and cut
+# "café" to "caf" plus half a character
+proj=$(basename "$(printf '%s' "$input" | jq -r '.cwd // "project"')" | perl -CSD -pe 's/[^\p{L}\p{N} ._-]//g')
+[ -n "$proj" ] || proj=project
 
 # Item label: the session's title (set via /rename or --name), best source
 # first — hook input, then the Remote Control bridge files. Falls back to
@@ -141,7 +178,7 @@ title=$(printf '%s' "$input" | jq -r '.session_title // empty')
 if [ -z "$title" ]; then
   title=$(jq -rs --arg sid "$full_sid" \
     '[.[] | select(.sessionId == $sid and (.name // "") != "")] | sort_by(.updatedAt) | last | .name // empty' \
-    "$HOME"/.claude/sessions/*.json 2>/dev/null)
+    "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/sessions/*.json 2>/dev/null)
 fi
 { [ -z "$title" ] || [ "$title" = "null" ]; } && title="$proj"
 
@@ -306,7 +343,7 @@ if [ "$kind" = reply ] && [ "$event" != "Stop" ]; then
   # winner picks up everything that accumulated.
   MIDLOCK="$SPEECH_ROOT/.mid-$sid.lock"
   if [ -d "$MIDLOCK" ]; then
-    lmt=$(stat -f %m "$MIDLOCK" 2>/dev/null || echo 0)
+    lmt=$(/usr/bin/stat -f %m "$MIDLOCK" 2>/dev/null || echo 0)
     [ $(( $(date +%s) - lmt )) -gt 600 ] && rmdir "$MIDLOCK" 2>/dev/null
   fi
   mkdir "$MIDLOCK" 2>/dev/null || exit 0
@@ -336,7 +373,7 @@ for _ in $(seq 1 60); do
     if [ "$uuid" != "$start_uuid" ]; then
       ok=1   # appeared after Stop fired
     else
-      entry_epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%S" "${ts%%.*}" +%s 2>/dev/null || echo 0)
+      entry_epoch=$(/bin/date -j -u -f "%Y-%m-%dT%H:%M:%S" "${ts%%.*}" +%s 2>/dev/null || echo 0)
       age=$(( $(date +%s) - entry_epoch ))
       [ "$age" -le 120 ] && ok=1
     fi
@@ -384,7 +421,8 @@ fi
 # "to" before \p{Extended_Pictographic} would otherwise delete the emoji ones.
 #   [text](url) -> text   ·   bare url -> "link"
 #   /code-review -> "code review"   ·   ~/a/b/c.swift -> "c.swift"
-#   → -> "to"   ·   ✅🚀⏰™ℹ㊙ any emoji + skin-tone/ZWJ/keycap joiners -> removed
+#   src/app/page.tsx -> "page.tsx"   ·   |---|---| table rules and --- lines -> dropped
+#   → -> "to"   ·   -> => -> "to"   ·   ✅🚀⏰™ℹ㊙ any emoji + skin-tone/ZWJ/keycap joiners -> removed
 # \p{Extended_Pictographic} covers every pictographic emoji (incl. future ones)
 # without touching digits/#/*; the second pass mops up flags, modifiers,
 # variation selectors, keycap joiners, and bullet/geometric-shape glyphs.
@@ -395,6 +433,10 @@ clean=$(printf '%s' "$text" \
       s{https?://\S+}{link}g;
       s{(^|[\s(\[\x60"'\''])/([A-Za-z][\w-]*)(?![\w/])}{$1 . ($2 =~ tr/-/ /r)}ge;
       s{(^|[\s(\[\x60"'\''])((?:~|\.{1,2})?(?:/[\w.\-]+){2,}/?)}{ $1 . (grep { length } split m{/}, $2)[-1] }ge;
+      $_ = "\n" if /^[ \t|:\-]*-{3,}[ \t|:\-]*$/;
+      s{(^|[\s(\[\x60"'\''])(?:[\w.\-]+/){2,}([\w.\-]*[\w\-]\.[A-Za-z][A-Za-z0-9]{0,5})(?![\w/])}{$1$2}g;
+      s{(^|[\s(\[\x60"'\''])[a-z0-9_.][\w.\-]*/([\w.\-]*[\w\-]\.[A-Za-z][A-Za-z0-9]{0,5})(?![\w/])}{$1$2}g;
+      s/[ \t]*(?<!-)(?:->|=>)[ \t]*/ to /g;
       s/[\x{2190}-\x{21FF}\x{27A1}\x{2B05}-\x{2B07}]/ to /g;
       s/\p{Extended_Pictographic}//g;
       s/[\x{1F1E6}-\x{1F1FF}\x{1F3FB}-\x{1F3FF}\x{FE00}-\x{FE0F}\x{200D}\x{20E3}\x{2022}\x{25A0}-\x{25FF}]//g;
@@ -446,7 +488,7 @@ trap cleanup_all EXIT
 # duration line, so the reply text no longer carries one, and the deck lost
 # its "[10:50 am] TL..." label. Skipped when the text already opens with a
 # stamp (sessions started before the rule was retired).
-tstamp=$(date -r "$stamp" "+%-I:%M %p" | tr 'A-Z' 'a-z')
+tstamp=$(/bin/date -r "$stamp" "+%-I:%M %p" | tr 'A-Z' 'a-z')
 case $clean in
   \[*[0-9]:[0-9][0-9]\ [ap]m\]*) ;;
   *) [ "$kind" = reply ] && { clean="[$tstamp] $clean"; preview="[$tstamp] $preview"; } ;;
@@ -467,7 +509,10 @@ fi
 # wake the deck before rendering so it's already watching when the audio
 # lands — a cold start mid-render used to miss fresh arrivals
 app_ok=1
-open -g -a "$APP" 2>>"$LOG" || app_ok=0
+# The bundle id catches an app the user moved (to /Applications, say); without
+# it the afplay fallback below played the reply while the moved deck played it
+# too, two voices at once (2026-09-25).
+open -g -a "$APP" 2>/dev/null || open -g -b com.adamraabe.SpeakySpeak 2>>"$LOG" || app_ok=0
 
 # audio first, manifest second, both via atomic rename — the deck only acts
 # on .json files whose .m4a already exists
@@ -490,7 +535,7 @@ convert_wav() {
 # stay identical.
 render_via_daemon() {   # writes "$QUEUE/.tmp-$id.wav"; returns 0 on success
   [ -f "$ALIVE" ] || return 1
-  local amt; amt=$(stat -f %m "$ALIVE" 2>/dev/null || echo 0)
+  local amt; amt=$(/usr/bin/stat -f %m "$ALIVE" 2>/dev/null || echo 0)
   [ $(( $(date +%s) - amt )) -le 8 ] || return 1
   mkdir -p "$RENDER"
   local req="$RENDER/$id.req" mark="$RENDER/$id.done"
@@ -510,7 +555,7 @@ render_via_daemon() {   # writes "$QUEUE/.tmp-$id.wav"; returns 0 on success
     sleep 0.05; i=$((i + 1))
     [ "$i" -gt "$cap" ] && { rm -f "$req"; return 1; }
     if [ $(( i % 40 )) -eq 0 ]; then                          # re-check liveness ~every 2s
-      amt=$(stat -f %m "$ALIVE" 2>/dev/null || echo 0)
+      amt=$(/usr/bin/stat -f %m "$ALIVE" 2>/dev/null || echo 0)
       [ $(( $(date +%s) - amt )) -le 8 ] || { rm -f "$req"; return 1; }
     fi
   done
@@ -590,7 +635,7 @@ if [ "$app_ok" != 1 ]; then
   # otherwise blocks every later fallback forever (broken-install path, the
   # population least able to debug it)
   if [ -d "$SPEECH_ROOT/.lock" ]; then
-    llmt=$(stat -f %m "$SPEECH_ROOT/.lock" 2>/dev/null || echo 0)
+    llmt=$(/usr/bin/stat -f %m "$SPEECH_ROOT/.lock" 2>/dev/null || echo 0)
     [ $(( $(date +%s) - llmt )) -gt 600 ] && rmdir "$SPEECH_ROOT/.lock" 2>/dev/null
   fi
   i=0

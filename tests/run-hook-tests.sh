@@ -20,6 +20,10 @@
 # 30-second poll window — silence IS the pass condition. ~70s total.
 set -u
 cd "$(dirname "$0")/.."
+# The run that launches these tests may itself be a scripted Claude Code run
+# (the feedback loop runs verify.sh under `claude -p`) or a quiet job; neither
+# may leak into the hook under test.
+unset CLAUDE_CODE_ENTRYPOINT SPEAKYSPEAK_QUIET
 HOOK="$PWD/hooks/speak-reply.sh"
 
 TDIR=$(mktemp -d)
@@ -376,6 +380,95 @@ got=$(cat "$R17/queue/"*.json 2>/dev/null | jq -r '.text' | head -1 | cut -c1-${
 R17b="$TDIR/root17b"; run_hook "$T2" "$R17b"
 got=$(cat "$R17b/queue/"*.json 2>/dev/null | jq -r '.text' | head -1 | cut -c1-${#want})
 [ "$got" != "$want" ] && ok "without the knob the name is not added" || bad "name added without the knob"
+
+# --- test 18: GNU coreutils first on PATH still speaks ----------------------
+# Plenty of developers put Homebrew's gnubin ahead of /usr/bin, and there
+# `date -j`, `date -r <epoch>` and `stat -f %m` fail. The fast-flush age check
+# then read every reply as ancient and dropped it as "no fresh text" (14 of 31
+# tests failed under gnubin, 2026-09-25). These stubs fail the BSD-only forms
+# the way GNU does; the hook must not reach them.
+echo "test 18: GNU date/stat ahead of the system ones on PATH"
+GNU="$TDIR/gnubin"; mkdir -p "$GNU"
+cat > "$GNU/date" <<'EOF2'
+#!/bin/bash
+for a in "$@"; do case $a in -j|-r) echo "date: GNU stand-in refuses $a" >&2; exit 1 ;; esac; done
+exec /bin/date "$@"
+EOF2
+cat > "$GNU/stat" <<'EOF2'
+#!/bin/bash
+echo "stat: GNU stand-in: cannot read file system information for '%m'" >&2; exit 1
+EOF2
+chmod +x "$GNU/date" "$GNU/stat"
+R18="$TDIR/root18"
+printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T2" "$SID_FULL" "$PROJ" \
+  | env HOME="$THOME" PATH="$STUB:$GNU:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R18" bash "$HOOK"
+J18=$(ls "$R18/queue/"*.json 2>/dev/null | head -1)
+if [ -n "$J18" ]; then ok "queued with GNU date/stat first on PATH"
+else bad "nothing queued under GNU date/stat (hook.log: $(tail -1 "$R18/hook.log" 2>/dev/null))"; fi
+[ -n "$J18" ] && jq -r .text "$J18" | grep -Eq '^\[[0-9]+:[0-9][0-9] [ap]m\] ' \
+  && ok "reply time still stamped" || bad "reply time missing: '$(jq -r .text "$J18" 2>/dev/null | head -1 | cut -c1-20)'"
+
+# --- test 19: a non-ASCII folder name survives a Dock launch (no LANG) ------
+echo "test 19: project names keep accents, spaces and non-Latin scripts without LANG"
+for name in "café app" "プロジェクト"; do
+  P19="$TDIR/$name"; mkdir -p "$P19"; R19="$TDIR/root19-$RANDOM"
+  printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T2" "$SID_FULL" "$P19" \
+    | env -u LANG -u LC_ALL -u LC_CTYPE HOME="$THOME" PATH="$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R19" bash "$HOOK"
+  got=$(jq -r .project "$R19/queue/"*.json 2>/dev/null)
+  [ "$got" = "$name" ] && ok "project '$name' kept" || bad "project '$name' became '$got'"
+done
+
+# --- test 20: a moved app is found by bundle id, never played twice ---------
+# `open -a ~/Applications/...` fails when the user moved the app; the afplay
+# fallback then played the reply while the moved deck played it as well.
+echo "test 20: open by bundle id when the app is not in ~/Applications"
+MV="$TDIR/movedbin"; mkdir -p "$MV"
+printf '#!/bin/bash\necho "open $*" >> "%s/calls20"\ncase "$*" in *" -a "*) exit 1 ;; esac\nexit 0\n' "$TDIR" > "$MV/open"
+printf '#!/bin/bash\necho "afplay $*" >> "%s/calls20"\n' "$TDIR" > "$MV/afplay"
+chmod +x "$MV/open" "$MV/afplay"
+R20="$TDIR/root20"
+printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T2" "$SID_FULL" "$PROJ" \
+  | env HOME="$THOME" PATH="$MV:$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R20" bash "$HOOK"
+grep -q 'open -g -b com.adamraabe.SpeakySpeak' "$TDIR/calls20" 2>/dev/null && ok "fell back to the bundle id" || bad "no bundle-id open: $(cat "$TDIR/calls20" 2>/dev/null)"
+grep -q '^afplay .*\.m4a' "$TDIR/calls20" 2>/dev/null && bad "afplay played it too (two voices)" || ok "no afplay double play"
+
+# --- test 21: tables, relative paths and ASCII arrows read cleanly ----------
+echo "test 21: table rules dropped, relative file paths shortened, -> read as 'to'"
+R21="$TDIR/root21"; T21="$TDIR/t21.jsonl"
+{ e_user u1 "go"
+  e_text a1 '| File | Change |\n|---|:---:|\n| auth.py | retry |\n\nEdited src/components/Button.tsx and hooks/speak-reply.sh; old -> new.'
+} > "$T21"
+run_hook "$T21" "$R21"
+got=$(qtext "$R21")
+case $got in *"---"*) bad "table rule spoken: $got" ;; *) ok "table rule dropped" ;; esac
+case $got in *"Edited Button.tsx and speak-reply.sh"*) ok "relative paths shortened" ;; *) bad "paths: $got" ;; esac
+case $got in *"old to new"*) ok "-> read as to" ;; *) bad "arrow: $got" ;; esac
+
+# --- test 22: scripted runs are quiet unless speak-headless says otherwise ---
+echo "test 22: claude -p / Agent SDK runs stay silent; interactive surfaces speak"
+T22="$TDIR/t22.jsonl"   # fresh timestamps: the fast-flush gate only takes entries under 120s old
+{ e_user u1 "do the thing"; e_text a1 "Scripted or not, this is the reply."; } > "$T22"
+for ep in sdk-cli sdk-ts sdk-py cli claude-desktop claude-vscode local-agent; do
+  R22="$TDIR/root22-$ep"
+  printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s","hook_event_name":"Stop"}' "$T22" "$SID_FULL" "$PROJ" \
+    | env HOME="$THOME" PATH="$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R22" CLAUDE_CODE_ENTRYPOINT="$ep" bash "$HOOK"
+  q=no; ls "$R22/queue/"*.json >/dev/null 2>&1 && q=yes
+  case $ep in
+    sdk-*) [ "$q" = no ] && grep -q "scripted run ($ep) not read aloud" "$R22/hook.log" 2>/dev/null \
+             && ok "$ep quiet, and hook.log says why" || bad "$ep: queued=$q log=$(cat "$R22/hook.log" 2>/dev/null)" ;;
+    *)     [ "$q" = yes ] && ok "$ep spoken" || bad "$ep went silent" ;;
+  esac
+done
+touch "$THOME/.claude/speak-headless"
+R22b="$TDIR/root22b"
+printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s","hook_event_name":"Stop"}' "$T22" "$SID_FULL" "$PROJ" \
+  | env HOME="$THOME" PATH="$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R22b" CLAUDE_CODE_ENTRYPOINT=sdk-cli bash "$HOOK"
+rm -f "$THOME/.claude/speak-headless"
+ls "$R22b/queue/"*.json >/dev/null 2>&1 && ok "speak-headless brings sdk-cli back" || bad "speak-headless ignored"
+R22c="$TDIR/root22c"
+printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s","hook_event_name":"PostToolUse"}' "$T5" "$SID_FULL" "$PROJ" \
+  | env HOME="$THOME" PATH="$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R22c" CLAUDE_CODE_ENTRYPOINT=sdk-cli bash "$HOOK"
+[ -e "$R22c/hook.log" ] && bad "a quieted tool call wrote to hook.log" || ok "quieted tool calls leave no trace"
 
 echo
 echo "hook tests: $PASS passed, $FAIL failed"

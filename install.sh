@@ -12,6 +12,9 @@ cd "$(dirname "$0")"
 defaults write com.adamraabe.SpeakySpeak srcPath -string "$PWD"
 
 mkdir -p "$HOME/.claude/hooks"
+# a hook someone edited in place is kept aside, not silently overwritten
+source scripts/keep-edited-hooks.sh
+keep_edited_hooks
 cp hooks/speak-reply.sh hooks/session-end.sh hooks/tts-daemon.py "$HOME/.claude/hooks/"
 chmod +x "$HOME/.claude/hooks/speak-reply.sh" "$HOME/.claude/hooks/session-end.sh" "$HOME/.claude/hooks/tts-daemon.py"
 echo "Installed hooks to ~/.claude/hooks/"

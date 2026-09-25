@@ -17,6 +17,7 @@
 import contextlib
 import glob
 import json
+import logging
 import os
 import sys
 import threading
@@ -35,7 +36,10 @@ MODEL_ID = "mlx-community/Kokoro-82M-bf16"
 # cold CLI (Sasha's install report, Defect 1).
 DEFAULT_VOICE = "bf_lily"
 STALE_SECS = 90          # a request older than this: the hook already gave up
-IDLE_SLEEP = 0.02        # poll cadence when no work is pending
+# The hook itself waits in 0.05s ticks, so polling faster than that bought
+# nothing: 0.02 was 50 wakeups a second, ~41 CPU-minutes over 43 hours.
+IDLE_SLEEP = 0.05        # poll cadence when no work is pending
+LOG_MAX = 2 * 1024 * 1024  # past this at startup, the old log moves to .old
 ALIVE_EVERY = 2.0        # heartbeat interval
 
 
@@ -45,6 +49,45 @@ def log(msg):
             f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
     except Exception:
         pass
+
+
+def setup_logging():
+    """Give the libraries' own warnings a file that stays open.
+
+    Until 2026-09-24 the first library warning fired while stderr was
+    redirected into a per-render `with open(LOG)` block, so Python's logging
+    built its default handler on THAT file, which closed right after. Every
+    later warning then failed with "--- Logging error --- ValueError: I/O
+    operation on closed file" plus a full traceback (534 of them in two days),
+    burying the real messages. A root handler set up here, before mlx_audio
+    is imported, means that default handler is never created.
+    """
+    try:
+        if os.path.getsize(LOG) > LOG_MAX:
+            os.replace(LOG, LOG + ".old")
+    except OSError:
+        pass
+    h = logging.FileHandler(LOG)
+    h.setFormatter(logging.Formatter("%(asctime)s %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S"))
+    root = logging.getLogger()
+    root.handlers[:] = [h]
+    root.setLevel(logging.WARNING)
+    # Routine for this voice on every render, so they only hid real problems:
+    # bf_lily (British) is loaded into the American pipeline by design, and
+    # the phonemizer's word-count note is harmless.
+    class Routine(logging.Filter):
+        def filter(self, rec):
+            m = str(rec.msg)
+            return not (m.startswith("Language mismatch") or m.startswith("words count mismatch"))
+    h.addFilter(Routine())
+
+
+@contextlib.contextmanager
+def quiet():
+    """Drop the library's console chatter during a render. It printed each
+    reply's full text ("Text: ...") into a world-readable /tmp log."""
+    with open(os.devnull, "w") as null, contextlib.redirect_stdout(null), contextlib.redirect_stderr(null):
+        yield
 
 
 def touch_alive():
@@ -64,6 +107,7 @@ def write_status(path, status):
 
 def main():
     os.makedirs(RENDER, exist_ok=True)
+    setup_logging()
     # A fresh daemon owns a clean queue — any leftover reqs/dones predate us and
     # no live hook is waiting on them.
     for p in glob.glob(os.path.join(RENDER, "*.req")) + glob.glob(os.path.join(RENDER, "*.done")):
@@ -88,7 +132,7 @@ def main():
                 warm_voice = vf.read().strip() or DEFAULT_VOICE
         except OSError:
             warm_voice = DEFAULT_VOICE
-        with open(LOG, "a") as lf, contextlib.redirect_stdout(lf), contextlib.redirect_stderr(lf):
+        with quiet():
             generate_audio(text="Ready.", model=model, voice=warm_voice,
                            join_audio=True, file_prefix=warm,
                            audio_format="wav", verbose=False)
@@ -145,7 +189,7 @@ def main():
 
                 scratch = os.path.join(RENDER, ".render-" + rid)
                 rt = time.time()
-                with open(LOG, "a") as lf, contextlib.redirect_stdout(lf), contextlib.redirect_stderr(lf):
+                with quiet():
                     generate_audio(text=text, model=model, voice=voice, speed=speed,
                                    join_audio=True, file_prefix=scratch,
                                    audio_format="wav", verbose=False)

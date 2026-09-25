@@ -12,28 +12,20 @@ Install instructions are in [INSTALL.md](INSTALL.md), and [speakyspeak.com/howto
 
 ## Set this up first
 
-Three changes, about five minutes, and they matter more than anything else in this guide.
+Two changes, about five minutes, and they matter more than anything else in this guide.
 
-1. **Add the timestamp rule to your `CLAUDE.md`** so every reply says when it was written. See below.
-2. **Pick a voice you can stand for hours.** Settings ▸ Voice, press ▶ to hear each one. The default is `bf_lily`.
-3. **Decide when it should read.** Settings ▸ Read replies. If you start long runs and walk away, choose "As it works, skipping short lines" so you hear progress instead of silence.
+1. **Pick a voice you can stand for hours.** Settings ▸ Voice, press ▶ to hear each one. The default is `bf_lily`.
+2. **Decide when it should read.** Settings ▸ Read replies. If you start long runs and walk away, choose "As it works, skipping short lines" so you hear progress instead of silence.
 
 ## Timestamps in your replies
 
 If you run more than one Claude Code session, replies pile up while you're away. Ten minutes later you're listening to a queue and every reply sounds equally current, when some of them are half an hour old.
 
-The fix is to have Claude say the time out loud. Add this to `~/.claude/CLAUDE.md`:
+SpeakySpeak does this for you: every spoken reply opens with the time it finished, "three forty-two p m", so a backlog is legible by ear. The same time shows in the mini player and in each row of the queue. Nothing to set up.
 
-```markdown
-- **Timestamp substantial replies.** Open any reply longer than a few lines with
-  `[H:MM am/pm]` on its own first line, before anything else. Get the time by
-  reading the clock (`date "+%-I:%M %p" | tr 'A-Z' 'a-z'`), never by guessing or
-  reusing an earlier one. One-line answers don't need it.
-```
+If you added the old `CLAUDE.md` rule that had Claude open each reply with `[H:MM am/pm]`, you can take it out. It still works (a reply that already opens with a time is not stamped twice), it just costs Claude a `date` call every reply.
 
-Now every spoken reply opens with "three forty-two p m" and a backlog becomes legible by ear. The time also shows in the mini player and in each row of the queue.
-
-**Why a rule and not a setting.** Claude Code has a built-in `showMessageTimestamps` setting, and it's worth turning on. But its display is gated server side and may show nothing for your account, so the `CLAUDE.md` rule is the one that reliably works today. Leave the setting on so the native stamps appear whenever that gate opens.
+Claude Code's own `showMessageTimestamps` setting puts times in the terminal too; its display is gated server side, so it may show nothing for your account yet.
 
 `showTurnDuration` is a separate setting that does work, and it pairs well: the start time plus "Cooked for 4m 12s" tells you when the answer actually landed.
 
@@ -81,6 +73,8 @@ Open Settings from the gear on the full deck's "Up next" line, or right-click th
 | **Read replies** | *When* it speaks. **When Claude finishes** reads a reply once Claude stops and waits for you. **As it works, skipping short lines** reads each step of a long run but stays quiet for short connective lines, which matters when Claude asks you to do something twenty minutes into a run that hasn't ended. **As it works, every line** reads all of them. install.sh registers the PostToolUse hook these need (INSTALL.md step 5 checks it). |
 | **Voice** | Which voice speaks. Kokoro voices when the neural engine is installed, otherwise your macOS voices. ▶ previews the selected one. Changing it re-renders whatever is still queued, so you don't get a mix. |
 | **Rate** | Words per minute, for macOS voices only. Kokoro speed is the playback speed selector instead. |
+| **Say the session name first** | Every reply opens with its session name, so several sessions speaking in a row are easy to tell apart. |
+| **Read scripted runs too (claude -p)** | Off by default: runs started with `claude -p` (scripts, scheduled jobs) or by programs built on the Agent SDK are not read aloud. Turn it on if the app you chat in runs Claude that way. The terminal, the desktop app, VS Code and Cursor are always read. |
 
 ### Playback
 
@@ -138,7 +132,8 @@ The Settings window writes plain files in `~/.claude/`, so shell edits and the G
 | --- | --- |
 | `speak-off` | Exists = nothing is rendered at all. A hard kill from the shell. |
 | `speak-name-first` | Exists = every reply opens with its session name. Settings ▸ Speech ▸ Say the session name first. |
-| `SPEAKYSPEAK_QUIET=1` (an environment variable, not a file) | Set in a process, the hook exits at once for that Claude Code run only. For headless jobs (`claude -p` under launchd or cron) whose working narration you do not want read aloud; interactive sessions are unaffected. |
+| `speak-headless` | Exists = `claude -p` and Agent SDK runs are read aloud too (they are quiet by default). Settings ▸ Speech ▸ Read scripted runs too. |
+| `SPEAKYSPEAK_QUIET=1` (an environment variable, not a file) | Set in a process, the hook exits at once for that Claude Code run only, whatever kind of run it is. Scripted `claude -p` runs are already quiet, so this is for the rare job that starts an ordinary interactive session. |
 | `speak-when` | `end`, `substantial`, or `all`. Absent means `end`. |
 | `speak-min-words` | Word threshold for `substantial` mode. Default 15. |
 | `speak-engine` | `kokoro` or `say`. Absent picks Kokoro when it's installed. |
@@ -148,12 +143,22 @@ The Settings window writes plain files in `~/.claude/`, so shell edits and the G
 | `speak-peer` | The other Mac's Tailscale IP, so the two Macs take turns on one pair of AirPods. |
 | `speak-lead-in` | Seconds of silence before speech when the app has been quiet a while, so shared AirPods finish switching to this Mac before the first word. Default 1.2. Set `0` to turn it off. |
 
+## Changing it yourself
+
+The whole thing is a few shell scripts and one Swift file, and asking your Claude to change it (what gets read, how it sounds, when it speaks) is the intended way to customize it. Two rules keep your changes through updates:
+
+- **Try a knob first.** Most wishes are a file above or a Settings row, and those survive everything.
+- **Change the clone, not the installed copy, and commit.** Edit the files in the folder you installed from, commit there, and run `./install.sh`. The files in `~/.claude/hooks/` are overwritten on every update (an edited one is kept aside as `.mine-<date>`, but it stops running).
+
+When an update arrives, your commits and uncommitted edits are carried over on top of it. If a change of yours and the update touch the same lines, the update stops, leaves your copy exactly as it was, and Settings ▸ About gives you a prompt that has your Claude merge the two.
+
 ## When something seems wrong
 
 Logs live in `/tmp/claude-speech/`: `hook.log` for rendering, `deck.log` for the app.
 
 - **Nothing is spoken.** Check `~/.claude/speak-off` doesn't exist, then check the full deck isn't muted, then look at `hook.log`.
 - **A reply was skipped.** Look for it in `hook.log`. Every spoken reply logs a line.
+- **An app you chat in is never read aloud.** If `hook.log` says "scripted run ... not read aloud", the app runs Claude with `claude -p`. Turn on Settings ▸ Speech ▸ Read scripted runs too.
 - **It reads things you don't want.** Set Read replies back to "When Claude finishes."
 - **The voice sounds wrong or slow.** The neural voice may have fallen back to macOS voices. `hook.log` records which engine each reply used.
 

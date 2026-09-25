@@ -17,9 +17,14 @@ This doc is written as if Claude Code were running in a terminal, because that's
 - **Claude replies in a language other than English** — the Kokoro neural voice is English only for now (it installs only the English phoneme pack), so a German or Japanese reply would be read as English sounds. Say so before step 3 and let the user choose: skip step 3 and set `~/.claude/speak-engine` to `say` with a matching macOS voice in `~/.claude/speak-voice` (`say -v ?` lists what is installed), or install the neural voice anyway for English work.
 - **Questions.** Ask the user as little as possible: the language check before step 3 when it applies, and the one terminal question in step 8. Nothing else in this doc needs their answer; check results yourself.
 - **Preferences the user mentions** (a different voice, faster speech, two Macs sharing AirPods) — set the matching knob from the Knobs section at the bottom as part of the install, don't make them come back for it.
+- **Claude Code run through `claude -p` or the Agent SDK** — SpeakySpeak does not read these runs aloud by default, so scripts and scheduled jobs stay quiet. Check how YOU are running right now: `echo "$CLAUDE_CODE_ENTRYPOINT"`. `cli`, `claude-desktop`, `claude-vscode` or `local-agent` (or empty) is an ordinary chat surface and needs nothing. `sdk-cli`, `sdk-ts` or `sdk-py` means the user is chatting with you through an app that drives Claude that way: run `touch ~/.claude/speak-headless` as part of step 4, or the end-to-end test in step 7 stays silent. If the user mentions scripts or cron jobs that run `claude -p`, tell them those stay quiet on purpose.
 - **A setup that can't run Claude Code hooks at all** — the app itself doesn't care where audio comes from. It plays anything dropped into `/tmp/claude-speech/queue/` as `<epoch>-<sid>.m4a` plus a matching `.json` (the queue contract, documented in [README.md](README.md)). You can write a small producer for whatever tool the user has.
 
-When the install is done, tell the user this: the whole thing is a few plain shell scripts and one Swift file, and asking Claude to change it — the voice, the speed, when it speaks, which sessions it reads — is the intended way to customize it.
+When the install is done, tell the user this: the whole thing is a few plain shell scripts and one Swift file, and asking Claude to change it — the voice, the speed, when it speaks, which sessions it reads — is the intended way to customize it. Whenever you (now or later) change it for them:
+
+- **Prefer a knob.** Most wishes are a file in the Knobs section below or a Settings row, and those survive every update.
+- **Edit the clone, commit, reinstall.** Change files in the clone from step 1, `git commit` there with a plain message, then run `./install.sh`. Never edit the installed copies in `~/.claude/hooks/` or `~/Applications/`: every update overwrites them (install.sh keeps an edited hook aside as `<name>.mine-<date>`, but it stops running).
+- **Updates keep committed and uncommitted changes.** The in-app updater replays them on top of each new version. If one clashes, the update changes nothing and Settings ▸ About offers the user a prompt for you: rebase their commits onto `@{u}`, keep what their change was for, take the update everywhere else, run `./install.sh`.
 
 ---
 
@@ -142,7 +147,7 @@ From `~/speakyspeak`:
 This is idempotent (safe to re-run). It runs `./build.sh` (compiles `main.swift`, ad-hoc signs, installs to `~/Applications/SpeakySpeak.app`), then:
 - copies `hooks/speak-reply.sh`, `hooks/session-end.sh`, `hooks/tts-daemon.py` to `~/.claude/hooks/` and makes them executable
 - if `~/.local/bin/mlx_audio.tts.generate` exists (step 3 succeeded), writes and bootstraps the LaunchAgent `com.adamraabe.speakyspeak-tts`, which keeps the Kokoro model warm in memory so replies render in ~0.3–0.9s instead of ~3s cold
-- **does not touch `~/.claude/settings.json`** — it only prints the hook-registration snippet to the terminal. Step 5 below does the actual registration.
+- registers the four hooks in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json` when that is set), add-only; step 5 checks it
 
 Expected output includes `Installed hooks to ~/.claude/hooks/` and either `Warm TTS daemon running (com.adamraabe.speakyspeak-tts)...` or `mlx-audio not installed — skipping warm TTS daemon (say fallback stays).` (expected on Intel, or if step 3 was skipped/failed).
 
@@ -161,7 +166,7 @@ Expected: all four paths exist.
 
 Confirm all four events are there:
 ```sh
-jq -r '.hooks | keys[]' ~/.claude/settings.json
+jq -r '.hooks | keys[]' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 ```
 Expected: the list includes `Notification`, `PostToolUse`, `SessionEnd`, `Stop` (other events the user already had may appear too).
 
@@ -271,6 +276,8 @@ Do not attach other questions to this one. The whole install asks the user two t
 | No speech at all, but `hook.log` shows the hook ran | `~/.claude/speak-off` exists (hard kill), or the app is muted | `rm -f ~/.claude/speak-off`; right-click the menu-bar icon and check Mute is off |
 | Voice sounds robotic / like the built-in macOS voice | Kokoro isn't installed, the daemon/CLI failed, or the **active voice isn't cached** (see the delay row above) and both Kokoro paths failed | Check `hook.log` for `engine=say` lines; cache the active voice per the delay row, redo step 3 if Kokoro was never installed, then `./install.sh` again; or in System Settings → Accessibility → Spoken Content → System Voice, download a better voice (e.g. Ava Premium) — the hook finds it automatically |
 | No menu-bar icon | App isn't running | `open ~/Applications/SpeakySpeak.app` |
+| Silent, and `hook.log` says `scripted run (sdk-cli) not read aloud` | The session runs through `claude -p` or the Agent SDK, which SpeakySpeak keeps quiet by default | `touch ~/.claude/speak-headless` (or Settings ▸ Speech ▸ Read scripted runs too) |
+| "Update to X…" fails, or Settings says your copy has changes that clash | The clone has edits that touch the same lines as the update; the updater left it exactly as it was | Settings ▸ About ▸ "Copy the prompt for Claude", or by hand: in the clone, commit the edits, `git fetch && git rebase @{u}`, resolve, `./install.sh`. `/tmp/claude-speech/update.log` has the detail |
 
 Still stuck after the table? Email **hi@speakyspeak.com** with the step that failed and the last lines of `/tmp/claude-speech/hook.log` — a human reads it and replies.
 
@@ -285,6 +292,8 @@ All under `~/.claude/`, created by touching/writing the file — no file means d
 - `speak-voice` — `say` voice name (e.g. `Ava (Premium)`); absent = best installed voice is auto-probed
 - `speak-voice-kokoro` — Kokoro voice id (default `bf_lily`; ~54 voices in the model card). New voices must be cached online once (the warm daemon runs offline) — `install.sh` handles the active voice, and auditioning a voice in Settings caches it too
 - `speak-engine` — force `say` or `kokoro`; absent = kokoro when installed, else say
+- `speak-headless` — exists = `claude -p` and Agent SDK runs are read aloud too (quiet by default); for users who chat through an app that drives `claude -p`
+- `speak-name-first` — exists = every reply opens with its session name
 
 ### Optional: two Macs sharing one pair of AirPods
 
@@ -302,7 +311,7 @@ Full architecture, controls reference, and settings-window documentation: [READM
 
 ## Next: hand them the guide
 
-Installation done (step 8 asked and answered). Point the user at [GUIDE.md](GUIDE.md) and say what it covers: the `CLAUDE.md` timestamp rule (so a queue of replies says when each was written), the suggested setup for running several sessions at once, and what every setting does. If they run more than one Claude Code session, the sort menu's "Group by: Session" plus "Order by: Oldest first" is the single most useful thing in it.
+Installation done (step 8 asked and answered). Point the user at [GUIDE.md](GUIDE.md) and say what it covers: the suggested setup for running several sessions at once, and what every setting does. If they run more than one Claude Code session, the sort menu's "Group by: Session" plus "Order by: Oldest first" is the single most useful thing in it.
 
 ## Uninstall
 
@@ -316,4 +325,4 @@ rm -f ~/.claude/hooks/speak-reply.sh ~/.claude/hooks/session-end.sh ~/.claude/ho
 uv tool uninstall mlx-audio 2>/dev/null
 ```
 
-Then take SpeakySpeak's hook entries out of `~/.claude/settings.json`. They are the four events shown in step 5, and every one of them names `speak-reply.sh` or `session-end.sh`, so those two names are what to search for. Leave the rest of the file alone. Last, delete the clone (`~/Applications` is the installed copy; the clone is wherever step 1 put it) and the knob files under `~/.claude/` if any were created: `speak-off`, `speak-rate`, `speak-voice`, `speak-voice-kokoro`, `speak-engine`, `speak-when`, `speak-min-words`, `speak-prompt-chime`, `speak-peer`.
+Then take SpeakySpeak's hook entries out of `~/.claude/settings.json`. They are the four events shown in step 5, and every one of them names `speak-reply.sh` or `session-end.sh`, so those two names are what to search for. Leave the rest of the file alone. Last, delete the clone (`~/Applications` is the installed copy; the clone is wherever step 1 put it) and the knob files under `~/.claude/` if any were created: `speak-off`, `speak-rate`, `speak-voice`, `speak-voice-kokoro`, `speak-engine`, `speak-when`, `speak-min-words`, `speak-prompt-chime`, `speak-peer`, `speak-name-first`, `speak-headless`.

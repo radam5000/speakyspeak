@@ -1,7 +1,10 @@
 #!/bin/bash
 # Build SpeakySpeak.app and install it to ~/Applications.
+# --no-install builds ./SpeakySpeak.app only: verify.sh uses it so a test run
+# never swaps the bundle under the deck the user is running.
 set -euo pipefail
 cd "$(dirname "$0")"
+INSTALL=1; [ "${1:-}" = "--no-install" ] && INSTALL=0
 
 APP=SpeakySpeak.app
 rm -rf "$APP"
@@ -56,6 +59,7 @@ SDK=$(bash scripts/pick-sdk.sh) || exit 1
 SDKFLAG=(); [ -n "$SDK" ] && SDKFLAG=(-sdk "$SDK")
 swiftc -O ${SDKFLAG[@]+"${SDKFLAG[@]}"} -target "$(uname -m)-apple-macosx14.0" main.swift -o "$APP/Contents/MacOS/SpeakySpeak"
 codesign --force -s - "$APP"
+[ "$INSTALL" = 1 ] || { echo "Built $PWD/$APP (not installed)"; exit 0; }
 
 mkdir -p "$HOME/Applications"
 rm -rf "$HOME/Applications/$APP"

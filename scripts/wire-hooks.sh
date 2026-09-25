@@ -16,8 +16,12 @@
 # user's agent merge JSON by hand, so every new hook event (PostToolUse in
 # 1.1, Notification in 1.2.8) silently missed everyone who updated in-app.
 # SPEAKYSPEAK_SETTINGS overrides the path; it exists only for tests/.
+# CLAUDE_CONFIG_DIR is Claude Code's own relocation of ~/.claude; a user who
+# sets it has Claude Code reading settings from there, so a hook registered in
+# ~/.claude/settings.json would never fire (2026-09-25). The in-app updater
+# runs without it and falls back to ~/.claude, which is harmless: add-only.
 set -u
-SETTINGS="${SPEAKYSPEAK_SETTINGS:-$HOME/.claude/settings.json}"
+SETTINGS="${SPEAKYSPEAK_SETTINGS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json}"
 SPEAK='bash ~/.claude/hooks/speak-reply.sh'
 END='bash ~/.claude/hooks/session-end.sh'
 

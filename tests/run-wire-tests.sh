@@ -42,4 +42,10 @@ S4="$TDIR/c/settings.json"; mkdir -p "$TDIR/c"; printf '{"hooks": \n' > "$S4"; r
 [ "$(cat "$S4")" = '{"hooks": ' ] && ok "file untouched" || bad "file rewritten"
 grep -q '"Notification"' "$TDIR/out" && ok "printed the block to merge by hand" || bad "no block printed: $(cat "$TDIR/out")"
 
+echo "wire 5: CLAUDE_CONFIG_DIR is where Claude Code reads settings, so it is where they go"
+CC5="$TDIR/ccdir"; mkdir -p "$CC5"
+env -u SPEAKYSPEAK_SETTINGS HOME="$TDIR/home5" CLAUDE_CONFIG_DIR="$CC5" bash "$W" >"$TDIR/out" 2>&1
+[ "$(jq -r '.hooks | keys | join(",")' "$CC5/settings.json" 2>/dev/null)" = "Notification,PostToolUse,SessionEnd,Stop" ] && ok "wired into \$CLAUDE_CONFIG_DIR/settings.json" || bad "not in CLAUDE_CONFIG_DIR: $(cat "$TDIR/out")"
+[ -e "$TDIR/home5/.claude/settings.json" ] && bad "also wrote ~/.claude/settings.json" || ok "left ~/.claude alone"
+
 echo; echo "wire tests: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

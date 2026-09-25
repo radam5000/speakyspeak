@@ -48,6 +48,7 @@ func dlog(_ s: String) {
 extension Notification.Name {
     static let speakyAccentChanged = Notification.Name("speakyAccentChanged")
     static let speakyHUDPreview = Notification.Name("speakyHUDPreview")
+    static let speakyOpenDeck = Notification.Name("speakyOpenDeck")
 }
 
 extension Color {
@@ -166,15 +167,53 @@ struct SpeechItem: Identifiable, Equatable {
 
 // MARK: - Playback + queue state
 
+// The two values that tick at 30 Hz during playback. See the note on
+// Deck.progress for why they are not on Deck.
+final class PlayMeter: ObservableObject {
+    static let shared = PlayMeter()
+    @Published var progress: Double = 0
+    @Published var level: Double = 0
+}
+
+// The only views that re-render on every meter tick: wrap the few pixels that
+// draw progress or loudness, so the view around them stays still.
+struct MeterReader<Content: View>: View {
+    @ObservedObject private var meter = PlayMeter.shared
+    @ViewBuilder var content: (PlayMeter) -> Content
+    var body: some View { content(meter) }
+}
+
+struct LevelScale: ViewModifier {
+    @ObservedObject private var meter = PlayMeter.shared
+    var active = true
+    func body(content: Content) -> some View {
+        content.scaleEffect(1 + 0.06 * (active ? meter.level : 0))
+    }
+}
+
 final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     static let shared = Deck()
 
     @Published var items: [SpeechItem] = []
     @Published var currentID: String?
     @Published var isPlaying = false
-    @Published var progress: Double = 0
+    // progress and level change 30 times a second while a reply plays, so
+    // they live on PlayMeter, not here: as @Published members of Deck every
+    // tick re-ran every view that observes the deck (each row, the closed
+    // popover, the never-shown Settings window), and on the macOS 27 SDK each
+    // of those passes leaked SwiftUI observation records inside Settings'
+    // Form + Picker (~5 MB a minute of speech, 46-86% CPU; found 2026-09-24).
+    // Reads and writes here still work; views that draw them observe
+    // PlayMeter.shared (MeterReader, LevelScale) so only they redraw per tick.
+    var progress: Double {
+        get { PlayMeter.shared.progress }
+        set { PlayMeter.shared.progress = newValue }
+    }
     @Published var duration: Double = 0
-    @Published var level: Double = 0     // smoothed 0…1 speech loudness, drives the swirl
+    var level: Double {   // smoothed 0…1 speech loudness, drives the swirl
+        get { PlayMeter.shared.level }
+        set { PlayMeter.shared.level = newValue }
+    }
     // NEVER touch NowPlayingBridge (or anything reading Deck.shared) from a
     // didSet that fires during init — update() reads Deck.shared while its
     // dispatch_once lock is still held and traps (crashed at launch 2026-08-15,
@@ -272,7 +311,15 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var player: AVAudioPlayer?
     private var meterTimer: Timer?
     private var fsSource: DispatchSourceFileSystemObject?
-    private var advanceGen = 0   // invalidates a pending chime-gap advance if anything else happens
+    private var advanceGen = 0 { // invalidates a pending chime-gap advance if anything else happens
+        didSet { advancePending = false }
+    }
+    // True only during the 2s chime gap between one reply and the next. The
+    // mini player ("Only while speaking") stays up through this gap and no
+    // other: it used to stay up whenever anything at all was queued, so a
+    // reply held behind a pause, or left after a stall (which never
+    // auto-advances), pinned it on screen indefinitely (Adam, 2026-09-24).
+    @Published private(set) var advancePending = false
     // ids in the order they started playing, most recent last, excluding the
     // current one — the "back one track" stack. Grows on each new play, pops on
     // playPrevious. Small and pruned when items are removed.
@@ -656,8 +703,10 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
                     chime?.volume = Float(0.45 * self.volume)
                     chime?.play()
                 }
+                self.advancePending = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                     guard gen == self.advanceGen, !self.isPlaying else { return }
+                    self.advancePending = false
                     self.maybeAutoplay()
                 }
             } else {
@@ -1275,6 +1324,7 @@ extension View {
 
 struct Scrubber: View {
     @ObservedObject var deck = Deck.shared
+    @ObservedObject private var meter = PlayMeter.shared   // redraws per tick; see Deck.progress
     let theme: Theme
     @State private var dragging = false
     @State private var hovering = false
@@ -1402,18 +1452,22 @@ struct DeckView: View {
 
     var body: some View {
         let theme = Theme.of(scheme)
-        VStack(spacing: 10) {
-            header(theme)
-            nowPlaying(theme)
-            toolbar(theme)
-            if !deck.items.isEmpty {
-                list(theme)
+        VStack(spacing: 0) {
+            VStack(spacing: 10) {
+                header(theme)
+                nowPlaying(theme)
+                toolbar(theme)
+                if !deck.items.isEmpty {
+                    list(theme)
+                }
+                if updater.availableVersion != nil { footer(theme) }
             }
-            if updater.availableVersion != nil { footer(theme) }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
+            .padding(.top, 13)
+            // Claude Check, folded in (Settings ▸ Claude); never in the staged screenshots
+            if settings.claudeChin && demoScene == nil { ClaudeChin(theme: theme) }
         }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 12)
-        .padding(.top, 13)
         .frame(minWidth: 340, idealWidth: 360, maxWidth: 500)
         .background(theme.bg.ignoresSafeArea())
         .contextMenu { Button("Quit SpeakySpeak") { NSApp.terminate(nil) } }
@@ -1596,7 +1650,9 @@ struct DeckView: View {
     @ViewBuilder private func nowPlaying(_ theme: Theme) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 14, style: .continuous).fill(theme.card)
-            SpeechSwirl(level: deck.level, active: deck.isPlaying, intensity: theme.swirlIntensity)
+            MeterReader { m in
+                SpeechSwirl(level: m.level, active: deck.isPlaying, intensity: theme.swirlIntensity)
+            }
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(theme.cardStroke)
 
@@ -1633,9 +1689,11 @@ struct DeckView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Scrubber(theme: theme)
                     HStack(spacing: 16) {
-                        Text(fmtTime(deck.progress))
-                            .font(.system(size: 10).monospacedDigit())
-                            .foregroundStyle(theme.secondary)
+                        MeterReader { m in
+                            Text(fmtTime(m.progress))
+                                .font(.system(size: 10).monospacedDigit())
+                                .foregroundStyle(theme.secondary)
+                        }
                         Spacer()
                         transportButton("gobackward.10", theme) { deck.skip(-10) }
                             .help("Back 10 seconds")
@@ -1684,7 +1742,7 @@ struct DeckView: View {
                     .offset(x: deck.isPlaying ? 0 : 1)
             }
             .frame(width: 34, height: 34)
-            .scaleEffect(1 + 0.06 * deck.level)
+            .modifier(LevelScale())
             .shadow(color: Theme.accent.opacity(0.35), radius: 5, y: 2)
         }
         .buttonStyle(.plain)
@@ -2007,7 +2065,7 @@ struct DeckRow: View {
     @ViewBuilder private var statusIcon: some View {
         switch item.state {
         case .playing:
-            Spark(size: 12, pulse: deck.level)
+            MeterReader { m in Spark(size: 12, pulse: m.level) }
         case .queued:
             // a muted session's dot goes gray — it isn't in line to play
             Circle()
@@ -2088,11 +2146,12 @@ final class Updater: ObservableObject {
     static let repoPage = "https://github.com/radam5000/speakyspeak"
     private let versionURL = URL(string: "https://raw.githubusercontent.com/radam5000/speakyspeak/main/VERSION")!
 
-    var localVersion: String {
+    // read once: Settings' version label asks for it on every redraw
+    lazy var localVersion: String = {
         guard let u = Bundle.main.url(forResource: "VERSION", withExtension: nil),
               let s = try? String(contentsOf: u, encoding: .utf8) else { return "0" }
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    }()
 
     func start() {
         let d = UserDefaults.standard
@@ -2190,7 +2249,7 @@ final class Updater: ObservableObject {
         }
     }
 
-    private static func newer(_ a: String, than b: String) -> Bool {
+    static func newer(_ a: String, than b: String) -> Bool {
         let pa = a.split(separator: ".").map { Int($0) ?? 0 }
         let pb = b.split(separator: ".").map { Int($0) ?? 0 }
         for i in 0..<max(pa.count, pb.count) {
@@ -2216,6 +2275,9 @@ final class Updater: ObservableObject {
         case running
         case relaunching
         case failed(String)
+        // The user's own edits in the clone clash with the update; the clone
+        // was put back as it was (scripts/update.sh exit 3).
+        case localChanges
     }
     @Published var phase: UpdatePhase = .idle
 
@@ -2235,13 +2297,17 @@ final class Updater: ObservableObject {
 
         // Every step's output lands in update.log — the old chain logged only
         // install.sh, which made its one field failure undiagnosable from logs.
+        // scripts/update.sh (1.2.19) carries the user's own edits across the
+        // update instead of failing on them; a clone older than that script
+        // still gets the plain pull. Its exit codes pick the message.
         let script = """
         LOG=\(speechRoot)/update.log
         mkdir -p /tmp/claude-speech
         rm -f \(Self.installedMarker) \(Self.failedMarker)
         {
           echo "=== update started $(date) ==="
-          cd \"\(src)\" && git pull --ff-only && ./install.sh
+          cd \"\(src)\" || exit 4
+          if [ -f scripts/update.sh ]; then bash scripts/update.sh; else git pull --ff-only && ./install.sh; fi
         } >> "$LOG" 2>&1
         rc=$?
         if [ $rc -eq 0 ]; then
@@ -2249,7 +2315,13 @@ final class Updater: ObservableObject {
           touch \(Self.installedMarker)
         else
           echo "=== update FAILED rc=$rc $(date) ===" >> "$LOG"
-          echo "a step failed (rc=$rc); log: $LOG" > \(Self.failedMarker)
+          case $rc in
+            2) msg="could not reach GitHub; check the connection and try again" ;;
+            3) msg="LOCAL-CHANGES" ;;
+            4) msg="this copy cannot update itself; details in $LOG" ;;
+            *) msg="a step failed (rc=$rc); log: $LOG" ;;
+          esac
+          echo "$msg" > \(Self.failedMarker)
         fi
         """
         let p = Process()
@@ -2276,7 +2348,7 @@ final class Updater: ObservableObject {
                 t.invalidate()
                 let reason = msg.trimmingCharacters(in: .whitespacesAndNewlines)
                 dlog("update failed: \(reason)")
-                self.phase = .failed(reason)
+                self.phase = reason == "LOCAL-CHANGES" ? .localChanges : .failed(reason)
             } else if Date() > deadline {
                 t.invalidate()
                 dlog("update timed out")
@@ -2284,6 +2356,22 @@ final class Updater: ObservableObject {
             }
         }
         RunLoop.main.add(poll, forMode: .common)
+    }
+
+    func stageDemoClash() { availableVersion = "1.2.20"; phase = .localChanges }
+
+    /// For a clone whose own edits clash with an update: the user's Claude
+    /// does the merge, since only it (with them) can say which side to keep.
+    static func mergePrompt(version: String) -> String {
+        let src = UserDefaults.standard.string(forKey: "srcPath") ?? "~/speakyspeak"
+        return """
+        SpeakySpeak (the Mac app that reads Claude Code replies aloud) could not update itself to \(version): my copy at \(src) has changes of its own that clash with the update. The updater put everything back as it was.
+
+        1. Read the end of \(speechRoot)/update.log, then `cd \(src)` and run `git status` and `git log --oneline -5`.
+        2. Commit any uncommitted edits, `git fetch`, then rebase them onto the update: `git rebase @{u}`.
+        3. For each conflict, keep what my change was for and take the update everywhere else. If a conflict is a real either-or, ask me.
+        4. Run ./install.sh, then tell me in two lines what you kept of mine.
+        """
     }
 
     // Quit ourselves and let a detached waiter reopen the new bundle. The
@@ -2407,12 +2495,17 @@ struct RainbowRipple: View {
     @State private var offAt: Date?     // dismissal — fade-out origin
     @State private var running = false  // the only thing that unpauses the timeline
     @State private var stopToken = 0    // cancels a pending stop if we re-activate
+    // After five minutes the ripple stops moving and holds its last frame
+    // until the user touches the panel (Adam, 2026-09-24): it once ran 19
+    // hours straight overnight at ~8% of a core. Still visible, costs nothing.
+    @State private var frozen = false
+    private let moveFor: Double = 5 * 60
 
     private let fadeIn = 2.0
     private let fadeOut = 0.5
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !running)) { tl in
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !running || frozen)) { tl in
             let t = tl.date.timeIntervalSinceReferenceDate
             let env = envelope(at: tl.date)
             let shape = RoundedRectangle(cornerRadius: corner, style: .continuous)
@@ -2442,7 +2535,7 @@ struct RainbowRipple: View {
         .allowsHitTesting(false)
         .onAppear {
             // the HUD can be built with attention already wanted
-            if active { onAt = Date(); offAt = nil; running = true }
+            if active { onAt = Date(); offAt = nil; running = true; freezeLater() }
         }
         .onChange(of: active) { _, now in
             stopToken &+= 1
@@ -2455,7 +2548,10 @@ struct RainbowRipple: View {
                 offAt = nil
                 onAt = Date().addingTimeInterval(-unsmooth(cur) * fadeIn)
                 running = true
+                frozen = false
+                freezeLater()
             } else if running {
+                frozen = false   // let the fade-out play
                 let token = stopToken
                 offAt = Date()
                 DispatchQueue.main.asyncAfter(deadline: .now() + fadeOut + 0.05) {
@@ -2463,6 +2559,14 @@ struct RainbowRipple: View {
                     running = false; onAt = nil; offAt = nil
                 }
             }
+        }
+    }
+
+    private func freezeLater() {
+        let token = stopToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + moveFor) {
+            guard stopToken == token, running, offAt == nil else { return }
+            frozen = true
         }
     }
 
@@ -2729,7 +2833,7 @@ struct MiniDeckView: View {
         let cardW: CGFloat = 264
         VStack(spacing: 8) {
             HStack(spacing: 7) {
-                Spark(size: 12, pulse: deck.isPlaying ? deck.level : 0)
+                MeterReader { m in Spark(size: 12, pulse: deck.isPlaying ? m.level : 0) }
                 Text(deck.current?.title ?? "SpeakySpeak")
                     .font(.system(size: 12, weight: .semibold, design: .serif))
                     .foregroundStyle(glass ? AnyShapeStyle(.primary) : AnyShapeStyle(theme.text))
@@ -2796,7 +2900,7 @@ struct MiniDeckView: View {
                                 .offset(x: deck.isPlaying ? 0 : 1)
                         }
                         .frame(width: 32, height: 32)
-                        .scaleEffect(1 + 0.06 * deck.level)
+                        .modifier(LevelScale())
                         .shadow(color: Theme.accent.opacity(0.35), radius: 4, y: 1)
                     }
                     .buttonStyle(.plain)
@@ -2813,6 +2917,9 @@ struct MiniDeckView: View {
             }
             .padding(.horizontal, 2)
             miniProgress(theme)
+            if settings.claudeChin && demoScene == nil {
+                ClaudeStrip(theme: theme, glass: glass).padding(.top, 6)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
@@ -2859,7 +2966,7 @@ struct MiniDeckView: View {
     //     tracks the pointer, then commit once on release.
     private func miniProgress(_ theme: Theme) -> some View {
         let live = scrubHover || scrubbing
-        return GeometryReader { geo in
+        return MeterReader { _ in GeometryReader { geo in
             let w = max(geo.size.width, 1)
             let base = deck.duration > 0 ? min(1, max(0, deck.progress / deck.duration)) : 0
             let frac = scrubbing ? scrubFrac : base
@@ -2896,7 +3003,7 @@ struct MiniDeckView: View {
                         scrubbing = false
                     })
             .onHover { scrubHover = $0 }
-        }
+        } }
         .frame(height: 14)
         // the row still DRAWS and HIT-TESTS 14pt tall; negative padding reports
         // 4pt to the VStack so the panel's fittingSize (and the ~84pt card)
@@ -3220,6 +3327,18 @@ final class MiniHUDController {
         }
     }
 
+    /// Content changed height while on screen: fit it, keeping the top edge put.
+    func refit() {
+        guard let p = panel, let h = host, isVisible else { return }
+        let fit = h.fittingSize
+        let size = NSSize(width: max(240, fit.width), height: max(60, fit.height))
+        guard size != p.frame.size else { return }
+        programmaticMove = true
+        defer { DispatchQueue.main.async { [weak self] in self?.programmaticMove = false } }
+        let f = p.frame
+        p.setFrame(NSRect(x: f.minX, y: f.maxY - size.height, width: size.width, height: size.height), display: true)
+    }
+
     private func position(_ p: NSPanel, size: NSSize, anchor: NSStatusBarButton?) {
         programmaticMove = true
         defer { DispatchQueue.main.async { [weak self] in self?.programmaticMove = false } }
@@ -3272,6 +3391,790 @@ final class MiniHUDController {
                 self.isVisible = false
             }
         })
+    }
+}
+
+// MARK: - Claude chin (Claude Check, folded into the full deck)
+//
+// Three things about Claude worth a glance, along the bottom of the full deck:
+// plan usage as three dials (session, the week, the week's per-model limit),
+// status.claude.com as three dots, and whether the installed Claude Code is
+// the newest. It replaces Adam's separate Claude Check panel
+// (~/Development/bin/claude-check, whose endpoints and parsing this follows),
+// which took too much room on screen (2026-09-24, his pick of the prototypes:
+// dial style A, menu-bar option A).
+//
+// Off by default: usage is fetched with the user's own Claude Code sign-in,
+// which a stranger's install should opt into (Settings ▸ Claude).
+//
+// Its signal is its own. An outage or a new Claude Code release lights a dot
+// on the menu-bar mark and a glow around the chin, separate from the reply
+// count. Hovering the chin counts as seeing it: the glow stops and the dot
+// stops blinking, but holds steady while the problem lasts. High usage only
+// colours its dial; there is nothing to do about it, so it never flashes.
+
+final class ClaudeWatch: ObservableObject {
+    static let shared = ClaudeWatch()
+
+    struct Limit: Identifiable, Equatable {
+        let id: String
+        let short: String      // under the dial
+        let full: String       // in the details and the tooltip
+        let percent: Int
+        let severity: String?
+        let resetsAt: Date?
+    }
+
+    struct Service: Identifiable, Equatable {
+        var id: String { name }
+        let name: String
+        let status: String     // statuspage: operational, degraded_performance, partial_outage, major_outage, under_maintenance
+        var ok: Bool { status == "operational" }
+        var words: String { status.replacingOccurrences(of: "_", with: " ") }
+    }
+
+    enum Flag { case update, trouble }
+
+    @Published private(set) var enabled = false
+    @Published private(set) var limits: [Limit] = []
+    @Published private(set) var usageNote: String?
+    @Published private(set) var services: [Service] = []
+    @Published private(set) var incidents: [String] = []
+    @Published private(set) var statusNote: String?
+    @Published private(set) var installed: String?
+    @Published private(set) var latest: String?
+    @Published private(set) var checkedAt: Date?
+    @Published private(set) var flag: Flag?
+    @Published private(set) var attention = false
+
+    static let changelogPage = URL(string: "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md")!
+    private let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+    private let changelogURL = URL(string: "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md")!
+    private let statusURL = URL(string: "https://status.claude.com/api/v2/summary.json")!
+    // matched by substring, so a renamed component still lands
+    private let wanted = ["Claude Code", "claude.ai", "Claude API"]
+
+    private var timer: Timer?
+    private var busy = false
+    private var usageAt: Date?
+    private var usageRetryAt: Date?
+    private var versionAt: Date?
+    private let seenKey = "claudeSeenSignals"
+
+    var updateOut: Bool {
+        guard let i = installed, let l = latest else { return false }
+        return Updater.newer(l, than: i)
+    }
+
+    func setEnabled(_ on: Bool) {
+        guard on != enabled else { return }
+        enabled = on
+        timer?.invalidate(); timer = nil
+        if on {
+            refresh()
+            let t = Timer(timeInterval: 5 * 60, repeats: true) { [weak self] _ in self?.refresh() }
+            RunLoop.main.add(t, forMode: .common)
+            timer = t
+        } else {
+            limits = []; services = []; incidents = []; installed = nil; latest = nil
+            usageNote = nil; statusNote = nil; checkedAt = nil
+            usageAt = nil; versionAt = nil
+            recompute()
+        }
+    }
+
+    /// Opening the deck on figures older than a minute fetches fresh ones.
+    func refreshIfStale() {
+        guard enabled else { return }
+        if let at = checkedAt, Date().timeIntervalSince(at) < 60 { return }
+        refresh()
+    }
+
+    func refresh() {
+        guard enabled, !busy else { return }
+        busy = true
+        let group = DispatchGroup()
+        let now = Date()
+
+        // Each source fails on its own: a broken one leaves a note, the others still land.
+        let wantUsage = (usageRetryAt.map { now >= $0 } ?? true)
+            && (usageAt.map { now.timeIntervalSince($0) >= 60 } ?? true)
+        if wantUsage {
+            group.enter()
+            DispatchQueue.global(qos: .utility).async {
+                let r = Result { try self.loadUsage() }
+                DispatchQueue.main.async {
+                    switch r {
+                    case .success(let rows):
+                        self.limits = rows; self.usageNote = nil
+                        self.usageAt = Date(); self.usageRetryAt = nil
+                    case .failure(let e):
+                        self.usageNote = Self.describe(e)
+                        // the usage endpoint rate-limits; back off instead of retrying each tick
+                        if let h = e as? HTTPFailure, h.code == 429 {
+                            self.usageRetryAt = Date().addingTimeInterval(max(h.retryAfter ?? 0, 120))
+                        }
+                    }
+                    group.leave()
+                }
+            }
+        }
+
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            let r = Result { try self.loadStatus() }
+            DispatchQueue.main.async {
+                switch r {
+                case .success(let s):
+                    self.services = s.services; self.incidents = s.incidents; self.statusNote = nil
+                case .failure(let e):
+                    self.statusNote = Self.describe(e)
+                }
+                group.leave()
+            }
+        }
+
+        // the changelog and `claude --version` move slowly: every 30 minutes
+        if versionAt.map({ now.timeIntervalSince($0) >= 30 * 60 }) ?? true {
+            group.enter()
+            DispatchQueue.global(qos: .utility).async {
+                let latest = try? self.loadLatest()
+                let installed = Self.installedVersion()
+                DispatchQueue.main.async {
+                    if let latest { self.latest = latest; self.versionAt = Date() }
+                    if let installed { self.installed = installed }
+                    group.leave()
+                }
+            }
+        }
+
+        group.notify(queue: .main) {
+            self.busy = false
+            self.checkedAt = Date()
+            self.recompute()
+        }
+    }
+
+    // MARK: attention
+
+    /// What is wrong right now, as strings: "update 2.1.282", "claude.ai partial_outage".
+    private var signals: Set<String> {
+        var s = Set<String>()
+        if updateOut, let l = latest { s.insert("update \(l)") }
+        for svc in services where !svc.ok { s.insert("\(svc.name) \(svc.status)") }
+        return s
+    }
+
+    private func recompute() {
+        let now = signals
+        flag = services.contains { !$0.ok } ? .trouble : (updateOut ? .update : nil)
+        let d = UserDefaults.standard
+        guard let seen = d.array(forKey: seenKey) as? [String] else {
+            // first run records what is true now and stays quiet: nothing
+            // here is news to someone who has never looked
+            if enabled, checkedAt != nil { d.set(Array(now), forKey: seenKey) }
+            attention = false
+            return
+        }
+        attention = !now.subtracting(seen).isEmpty
+    }
+
+    /// Hovering the chin counts as having seen what it shows.
+    func acknowledge() {
+        guard attention else { return }
+        UserDefaults.standard.set(Array(signals), forKey: seenKey)
+        attention = false
+    }
+
+    // MARK: fetching (always on a background queue)
+
+    private func loadUsage() throws -> [Limit] {
+        let token = try Self.readToken()
+        let data = try Self.fetch(usageURL, headers: [
+            "Authorization": "Bearer " + token,
+            "anthropic-beta": "oauth-2025-04-20",
+        ])
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw Plain("The usage reply was not JSON.")
+        }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoPlain = ISO8601DateFormatter()
+        func date(_ v: Any?) -> Date? {
+            guard let s = v as? String else { return nil }
+            return iso.date(from: s) ?? isoPlain.date(from: s)
+        }
+        func pct(_ v: Any?) -> Int { Int(((v as? NSNumber)?.doubleValue ?? 0).rounded()) }
+
+        var rows: [Limit] = []
+        for case let lim as [String: Any] in (root["limits"] as? [Any] ?? []) {
+            let kind = lim["kind"] as? String ?? "limit"
+            let model = ((lim["scope"] as? [String: Any])?["model"] as? [String: Any])?["display_name"] as? String
+            let short: String, full: String
+            switch kind {
+            case "session":    short = "session"; full = "Session"
+            case "weekly_all": short = "week";    full = "Week, all models"
+            default:
+                short = model ?? kind.replacingOccurrences(of: "_", with: " ")
+                full = model.map { "Week, \($0)" } ?? short
+            }
+            rows.append(Limit(id: kind + (model ?? ""), short: short, full: full,
+                              percent: pct(lim["percent"]), severity: lim["severity"] as? String,
+                              resetsAt: date(lim["resets_at"])))
+        }
+        // the older top-level windows, if `limits` is ever missing
+        if rows.isEmpty {
+            for (key, short, full) in [("five_hour", "session", "Session"), ("seven_day", "week", "Week, all models")] {
+                guard let o = root[key] as? [String: Any], o["utilization"] != nil else { continue }
+                rows.append(Limit(id: key, short: short, full: full, percent: pct(o["utilization"]),
+                                  severity: nil, resetsAt: date(o["resets_at"])))
+            }
+        }
+        if rows.isEmpty { throw Plain("The usage reply had no limits in it.") }
+        return Array(rows.prefix(3))
+    }
+
+    private func loadStatus() throws -> (services: [Service], incidents: [String]) {
+        let data = try Self.fetch(statusURL)
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw Plain("status.claude.com did not send JSON.")
+        }
+        let comps = root["components"] as? [Any] ?? []
+        var out: [Service] = []
+        for want in wanted {
+            for case let c as [String: Any] in comps {
+                if (c["group"] as? Bool) == true { continue }
+                guard let name = c["name"] as? String,
+                      name.range(of: want, options: .caseInsensitive) != nil else { continue }
+                out.append(Service(name: want, status: c["status"] as? String ?? "unknown"))
+                break
+            }
+        }
+        var incidents: [String] = []
+        for key in ["incidents", "scheduled_maintenances"] {
+            for case let i as [String: Any] in (root[key] as? [Any] ?? []) {
+                guard let name = i["name"] as? String else { continue }
+                let state = (i["status"] as? String ?? "").replacingOccurrences(of: "_", with: " ")
+                incidents.append(state.isEmpty ? name : "\(name) (\(state))")
+            }
+        }
+        return (out, incidents)
+    }
+
+    private func loadLatest() throws -> String {
+        let data = try Self.fetch(changelogURL)
+        guard let text = String(data: data, encoding: .utf8) else { throw Plain("The changelog was not text.") }
+        for line in text.components(separatedBy: .newlines) where line.hasPrefix("## ") {
+            if let v = Self.firstVersion(in: line) { return v }
+        }
+        throw Plain("No version heading in the changelog.")
+    }
+
+    // MARK: helpers
+
+    struct Plain: LocalizedError {
+        let msg: String
+        init(_ m: String) { msg = m }
+        var errorDescription: String? { msg }
+    }
+    struct HTTPFailure: Error { let code: Int; let retryAfter: TimeInterval? }
+
+    static func describe(_ e: Error) -> String {
+        if let h = e as? HTTPFailure {
+            return h.code == 429 ? "Usage is rate limited; trying again in a few minutes."
+                 : h.code == 401 ? "Claude Code's sign-in was refused. Run claude once to refresh it."
+                 : "The server answered \(h.code)."
+        }
+        if let p = e as? Plain { return p.msg }
+        let ns = e as NSError
+        if ns.domain == NSURLErrorDomain, ns.code == NSURLErrorNotConnectedToInternet { return "No internet connection." }
+        return ns.localizedDescription
+    }
+
+    /// Blocking GET with a 10s timeout; background queues only.
+    static func fetch(_ url: URL, headers: [String: String] = [:]) throws -> Data {
+        var req = URLRequest(url: url, timeoutInterval: 10)
+        req.setValue("SpeakySpeak", forHTTPHeaderField: "User-Agent")
+        req.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        let sem = DispatchSemaphore(value: 0)
+        var out: Data?, err: Error?, resp: HTTPURLResponse?
+        let task = URLSession.shared.dataTask(with: req) { d, r, e in
+            out = d; err = e; resp = r as? HTTPURLResponse
+            sem.signal()
+        }
+        task.resume()
+        if sem.wait(timeout: .now() + 15) == .timedOut { task.cancel(); throw Plain("The request timed out.") }
+        if let err { throw err }
+        let code = resp?.statusCode ?? 0
+        if code >= 400 {
+            throw HTTPFailure(code: code, retryAfter: resp?.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init))
+        }
+        guard let out else { throw Plain("The server sent nothing back.") }
+        return out
+    }
+
+    /// The OAuth token Claude Code already holds. Read at fetch time, kept in
+    /// a local, never logged or written anywhere.
+    static func readToken() throws -> String {
+        var json: [String: Any]?
+        let path = NSHomeDirectory() + "/.claude/.credentials.json"
+        if let d = FileManager.default.contents(atPath: path) {
+            json = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
+        }
+        if json == nil {
+            let (status, out) = run("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+            let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard status == 0, !trimmed.isEmpty else {
+                throw Plain("No Claude Code sign-in found. If macOS asked for permission, choose Always Allow.")
+            }
+            json = (try? JSONSerialization.jsonObject(with: Data(trimmed.utf8))) as? [String: Any]
+        }
+        guard let token = (json?["claudeAiOauth"] as? [String: Any])?["accessToken"] as? String,
+              !token.isEmpty else {
+            throw Plain("Claude Code's sign-in has no access token in it.")
+        }
+        return token
+    }
+
+    static func installedVersion() -> String? {
+        // an app launched from Finder has almost no PATH
+        let home = NSHomeDirectory()
+        var env = ProcessInfo.processInfo.environment
+        let extras = ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        let current = env["PATH"].map { $0.split(separator: ":").map(String.init) } ?? []
+        env["PATH"] = (current + extras.filter { !current.contains($0) }).joined(separator: ":")
+        let (status, out) = run("/usr/bin/env", ["claude", "--version"], env: env)
+        return status == 0 ? firstVersion(in: out) : nil
+    }
+
+    /// The first x.y.z in a string.
+    static func firstVersion(in s: String) -> String? {
+        guard let r = s.range(of: #"\d+\.\d+\.\d+"#, options: .regularExpression) else { return nil }
+        return String(s[r])
+    }
+
+    @discardableResult
+    static func run(_ path: String, _ args: [String], env: [String: String]? = nil) -> (Int32, String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        if let env { p.environment = env }
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return (-1, "") }
+        // read before waiting, so a chatty command cannot fill the pipe and hang
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let deadline = Date().addingTimeInterval(10)
+        while p.isRunning && Date() < deadline { usleep(50_000) }
+        if p.isRunning { p.terminate(); return (-1, "") }
+        return (p.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+    }
+}
+
+/// Colours for the chin's states, readable on both deck themes.
+struct ChinPalette {
+    let ok, warn, crit, update: Color
+    static func of(_ scheme: ColorScheme) -> ChinPalette {
+        scheme == .dark
+            ? ChinPalette(ok: Color(hex: 0x8DB47B), warn: Color(hex: 0xE0A94A),
+                          crit: Color(hex: 0xEE7A64), update: Color(hex: 0x4F8FE0))
+            : ChinPalette(ok: Color(hex: 0x5A8A4A), warn: Color(hex: 0xB7791F),
+                          crit: Color(hex: 0xC0412F), update: Color(hex: 0x2F6FC4))
+    }
+    // the API's own severity when it sends one, else 70/90
+    func usage(_ l: ClaudeWatch.Limit) -> Color {
+        switch l.severity {
+        case "critical": return crit
+        case "warning": return warn
+        case "normal": return l.percent >= 90 ? crit : ok
+        default: return l.percent >= 90 ? crit : l.percent >= 70 ? warn : ok
+        }
+    }
+    func service(_ s: ClaudeWatch.Service) -> Color {
+        switch s.status {
+        case "operational": return ok
+        case "degraded_performance": return warn
+        case "under_maintenance": return update
+        default: return crit
+        }
+    }
+}
+
+func resetsText(_ d: Date?) -> String {
+    guard let d else { return "" }
+    let s = max(0, Int(d.timeIntervalSinceNow))
+    let days = s / 86400, h = (s % 86400) / 3600, m = (s % 3600) / 60
+    let span = days > 0 ? "\(days)d \(h)h" : h > 0 ? "\(h)h \(m)m" : "\(m)m"
+    return "Resets in \(span)"
+}
+
+struct UsageDial: View {
+    let limit: ClaudeWatch.Limit
+    let rolled: Bool
+    let ink: AnyShapeStyle      // the number, when usage is fine
+    let faint: AnyShapeStyle    // the label
+    let track: Color
+    let palette: ChinPalette
+    var size: CGFloat = 32      // 32 in the deck's chin, 24 in the mini player
+
+    var body: some View {
+        let shown = rolled ? limit.percent : 0
+        let color = palette.usage(limit)
+        let hot = color != palette.ok
+        let line: CGFloat = size >= 30 ? 3 : 2.4
+        VStack(spacing: 1) {
+            ZStack {
+                Circle().trim(from: 0, to: 0.75)
+                    .stroke(track, style: StrokeStyle(lineWidth: line, lineCap: .round))
+                    .rotationEffect(.degrees(135))
+                Circle().trim(from: 0, to: 0.75 * CGFloat(shown) / 100)
+                    .stroke(color, style: StrokeStyle(lineWidth: line, lineCap: .round))
+                    .rotationEffect(.degrees(135))
+                // the digits roll like an odometer when the deck opens
+                Text("\(shown)")
+                    .font(.system(size: size >= 30 ? 10.5 : 8.5, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(hot ? AnyShapeStyle(color) : ink)
+                    .contentTransition(.numericText(value: Double(shown)))
+            }
+            .frame(width: size, height: size)
+            Text(limit.short)
+                .font(.system(size: size >= 30 ? 9 : 8))
+                .foregroundStyle(faint)
+                .lineLimit(1)
+        }
+        .frame(minWidth: size + 6)
+    }
+}
+
+struct ClaudeChin: View {
+    @ObservedObject private var watch = ClaudeWatch.shared
+    let theme: Theme
+    @Environment(\.colorScheme) private var scheme
+    @State private var open = false
+    @State private var rolled = false
+    @State private var glow = false
+
+    var body: some View {
+        let pal = ChinPalette.of(scheme)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                dials(pal)
+                divider
+                HStack(spacing: 0) {
+                    ForEach(watch.services) { s in
+                        Button(action: toggle) {
+                            Circle().fill(pal.service(s))
+                                .frame(width: 7, height: 7)
+                                .frame(width: 16, height: 28)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("\(s.name): \(s.words)")
+                        .accessibilityLabel("\(s.name): \(s.words)")
+                    }
+                    if watch.services.isEmpty {
+                        Text("–").font(.system(size: 11)).foregroundStyle(theme.secondary)
+                            .help(watch.statusNote ?? "Checking status.claude.com")
+                    }
+                }
+                divider
+                version(pal)
+                Spacer(minLength: 0)
+                Button(action: toggle) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(theme.secondary)
+                        .rotationEffect(.degrees(open ? 180 : 0))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(open ? "Hide the Claude details" : "Show the Claude details")
+                .accessibilityLabel(open ? "Hide Claude details" : "Show Claude details")
+            }
+            .padding(.leading, 14)
+            .padding(.trailing, 10)
+            .padding(.vertical, 7)
+
+            if open {
+                details(pal)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+                    .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.card)
+        .overlay(alignment: .top) { Rectangle().fill(theme.cardStroke).frame(height: 1) }
+        .overlay {
+            // the chin's own "look at me", separate from the player's rainbow
+            if watch.attention {
+                Rectangle()
+                    .strokeBorder(Theme.accent.opacity(glow ? 0.85 : 0.1), lineWidth: 1.5)
+                    .allowsHitTesting(false)
+                    .onAppear {
+                        withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { glow = true }
+                    }
+                    .onDisappear { glow = false }
+            }
+        }
+        .onHover { if $0 { watch.acknowledge() } }
+        .onAppear {
+            rolled = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                withAnimation(.spring(duration: 1.0)) { rolled = true }
+            }
+        }
+        .onDisappear { rolled = false; open = false }
+        .animation(.easeOut(duration: 0.2), value: open)
+    }
+
+    private func toggle() {
+        watch.acknowledge()
+        open.toggle()
+    }
+
+    private var divider: some View {
+        Rectangle().fill(theme.cardStroke).frame(width: 1, height: 26)
+    }
+
+    @ViewBuilder private func dials(_ pal: ChinPalette) -> some View {
+        HStack(alignment: .bottom, spacing: 5) {
+            ForEach(watch.limits) { l in
+                Button(action: toggle) {
+                    UsageDial(limit: l, rolled: rolled, ink: AnyShapeStyle(theme.text),
+                              faint: AnyShapeStyle(theme.secondary), track: theme.track, palette: pal)
+                }
+                    .buttonStyle(.plain)
+                    .help("\(l.full): \(l.percent)%. \(resetsText(l.resetsAt)).")
+                    .accessibilityLabel("\(l.full) usage \(l.percent) percent. \(resetsText(l.resetsAt)).")
+            }
+            if watch.limits.isEmpty {
+                Text(watch.usageNote == nil ? "usage…" : "usage –")
+                    .font(.system(size: 10))
+                    .foregroundStyle(theme.secondary)
+                    .frame(height: 28)
+                    .help(watch.usageNote ?? "Fetching your plan usage")
+            }
+        }
+    }
+
+    @ViewBuilder private func version(_ pal: ChinPalette) -> some View {
+        if let v = watch.installed ?? watch.latest {
+            Button(action: toggle) {
+                HStack(spacing: 4) {
+                    Text(watch.updateOut ? (watch.latest ?? v) : v)
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(theme.text)
+                    if watch.updateOut {
+                        Text("NEW")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4).padding(.vertical, 1.5)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(pal.update))
+                    } else {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(pal.ok)
+                    }
+                }
+                .frame(height: 28)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(watch.updateOut
+                  ? "Claude Code \(watch.latest ?? "") is out. You have \(watch.installed ?? "an older one")."
+                  : "Claude Code \(v), the newest.")
+            .accessibilityLabel(watch.updateOut
+                  ? "Claude Code \(watch.latest ?? "") is out. You have \(watch.installed ?? "an older one")."
+                  : "Claude Code \(v), up to date.")
+        }
+    }
+
+    private func sectionLabel(_ s: String) -> some View {
+        Text(s.uppercased())
+            .font(.system(size: 9, weight: .bold))
+            .kerning(0.8)
+            .foregroundStyle(theme.secondary)
+    }
+
+    @ViewBuilder private func details(_ pal: ChinPalette) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Rectangle().fill(theme.cardStroke).frame(height: 1)
+            VStack(alignment: .leading, spacing: 5) {
+                sectionLabel("Usage")
+                ForEach(watch.limits) { l in
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 8) {
+                            Text(l.full).font(.system(size: 11)).foregroundStyle(theme.text)
+                                .frame(width: 104, alignment: .leading)
+                            GeometryReader { g in
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(theme.track)
+                                    Capsule().fill(pal.usage(l))
+                                        .frame(width: g.size.width * CGFloat(rolled ? l.percent : 0) / 100)
+                                }
+                            }
+                            .frame(height: 4)
+                            Text("\(l.percent)%")
+                                .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                                .foregroundStyle(pal.usage(l) == pal.ok ? theme.text : pal.usage(l))
+                                .frame(width: 34, alignment: .trailing)
+                        }
+                        Text(resetsText(l.resetsAt)).font(.system(size: 9.5)).foregroundStyle(theme.secondary)
+                    }
+                }
+                if let n = watch.usageNote {
+                    Text(n).font(.system(size: 10)).foregroundStyle(theme.secondary)
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                sectionLabel("Status")
+                ForEach(watch.services) { s in
+                    HStack(spacing: 7) {
+                        Circle().fill(pal.service(s)).frame(width: 6, height: 6)
+                        Text(s.name).font(.system(size: 11)).foregroundStyle(theme.text)
+                        Spacer()
+                        Text(s.words).font(.system(size: 10.5))
+                            .foregroundStyle(s.ok ? theme.secondary : pal.service(s))
+                    }
+                }
+                ForEach(watch.incidents, id: \.self) { i in
+                    Text(i).font(.system(size: 10)).foregroundStyle(theme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let n = watch.statusNote {
+                    Text(n).font(.system(size: 10)).foregroundStyle(theme.secondary)
+                }
+            }
+            HStack(spacing: 8) {
+                sectionLabel("Claude Code")
+                Text(watch.updateOut
+                     ? "\(watch.installed ?? "?") installed, \(watch.latest ?? "?") out"
+                     : "\(watch.installed ?? watch.latest ?? "?"), the newest")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(theme.text)
+                Spacer()
+                Link("What's new", destination: ClaudeWatch.changelogPage)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.accent)
+            }
+            HStack {
+                Text(watch.checkedAt.map { "Checked \($0.formatted(date: .omitted, time: .shortened)), every 5 minutes" } ?? "Checking…")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(theme.secondary)
+                Spacer()
+                Button(action: { watch.refresh() }) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(theme.secondary)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Check now")
+                .accessibilityLabel("Check Claude usage and status now")
+            }
+        }
+    }
+}
+
+// The same three things on one line along the bottom of the mini player
+// (Adam, 2026-09-24: "on the bottom of the floating window as well"). No
+// drop-down here, the panel stays small: a click opens the full deck, whose
+// chin has the details. It glows and acknowledges exactly like the chin.
+struct ClaudeStrip: View {
+    @ObservedObject private var watch = ClaudeWatch.shared
+    let theme: Theme
+    let glass: Bool
+    @Environment(\.colorScheme) private var scheme
+    @State private var glow = false
+
+    var body: some View {
+        let pal = ChinPalette.of(scheme)
+        let ink = glass ? AnyShapeStyle(.primary) : AnyShapeStyle(theme.text)
+        let faint = glass ? AnyShapeStyle(.secondary) : AnyShapeStyle(theme.secondary)
+        let track = glass ? Color.primary.opacity(0.14) : theme.track
+        HStack(spacing: 0) {
+            HStack(alignment: .bottom, spacing: 3) {
+                ForEach(watch.limits) { l in
+                    UsageDial(limit: l, rolled: true, ink: ink, faint: faint, track: track,
+                              palette: pal, size: 24)
+                        .help("\(l.full): \(l.percent)%. \(resetsText(l.resetsAt)).")
+                }
+                if watch.limits.isEmpty {
+                    Text(watch.usageNote == nil ? "usage…" : "usage –")
+                        .font(.system(size: 10)).foregroundStyle(faint)
+                        .help(watch.usageNote ?? "Fetching your plan usage")
+                }
+            }
+            Spacer(minLength: 6)
+            HStack(spacing: 5) {
+                ForEach(watch.services) { s in
+                    Circle().fill(pal.service(s)).frame(width: 6, height: 6)
+                        .help("\(s.name): \(s.words)")
+                }
+            }
+            Spacer(minLength: 6)
+            if let v = watch.installed ?? watch.latest {
+                HStack(spacing: 3) {
+                    Text(watch.updateOut ? (watch.latest ?? v) : v)
+                        .font(.system(size: 10, weight: .medium).monospacedDigit())
+                        .foregroundStyle(ink)
+                    if watch.updateOut {
+                        Text("NEW")
+                            .font(.system(size: 7.5, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 3).padding(.vertical, 1)
+                            .background(RoundedRectangle(cornerRadius: 3).fill(pal.update))
+                    } else {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(pal.ok)
+                    }
+                }
+                .help(watch.updateOut ? "Claude Code \(watch.latest ?? "") is out. You have \(watch.installed ?? "an older one")."
+                                      : "Claude Code \(v), the newest.")
+            }
+        }
+        .frame(height: 36)
+        .padding(.horizontal, 2)
+        .overlay {
+            if watch.attention {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Theme.accent.opacity(glow ? 0.85 : 0.1), lineWidth: 1.5)
+                    .padding(-3)
+                    .allowsHitTesting(false)
+                    .onAppear {
+                        withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { glow = true }
+                    }
+                    .onDisappear { glow = false }
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { if $0 { watch.acknowledge() } }
+        .onTapGesture {
+            watch.acknowledge()
+            NotificationCenter.default.post(name: .speakyOpenDeck, object: nil)
+        }
+        // a press here is a click, never the start of a panel drag (a drag
+        // would otherwise end in a tap and pop the deck open)
+        .noWindowDrag()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(stripSummary)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Opens the full deck with the details")
+    }
+
+    private var stripSummary: String {
+        var parts = watch.limits.map { "\($0.full) \($0.percent) percent" }
+        let down = watch.services.filter { !$0.ok }
+        parts.append(down.isEmpty ? "Claude services operational"
+                                  : down.map { "\($0.name) \($0.words)" }.joined(separator: ", "))
+        if watch.updateOut { parts.append("Claude Code \(watch.latest ?? "") is out") }
+        return "Claude: " + parts.joined(separator: ". ")
     }
 }
 
@@ -3399,6 +4302,10 @@ final class SettingsStore: ObservableObject {
     // sessions in a row and no way to tell which is talking). Flag file read
     // by the hook at render time, so it applies from the next reply on.
     @Published var nameFirst: Bool = false          { didSet { guard !loading else { return }; setFlag("speak-name-first", present: nameFirst) } }
+    // `claude -p` and Agent SDK runs are silent unless this is on (the hook
+    // reads ~/.claude/speak-headless). For an app that drives `claude -p` as
+    // its chat window; scripts and scheduled jobs should stay quiet.
+    @Published var readHeadless: Bool = false       { didSet { guard !loading else { return }; setFlag("speak-headless", present: readHeadless) } }
     // Changing this repaints the whole app: Theme.accent reads the cached
     // value, and every view that observes SettingsStore redraws. The menu-bar
     // icon is AppKit and redraws through the notification below.
@@ -3412,6 +4319,15 @@ final class SettingsStore: ObservableObject {
     }
     @Published var hudStyle: HUDStyle = .glassy { didSet { guard !loading else { return }; UserDefaults.standard.set(hudStyle.rawValue, forKey: "hudStyle") } }
     @Published var hudVisibility: HUDVisibility = .whileSpeaking { didSet { guard !loading else { return }; UserDefaults.standard.set(hudVisibility.rawValue, forKey: "hudVisibility") } }
+    // Claude usage, status and version along the bottom of the deck. Off by
+    // default: it reads the user's Claude Code sign-in (see ClaudeWatch).
+    @Published var claudeChin: Bool = false {
+        didSet {
+            guard !loading else { return }
+            UserDefaults.standard.set(claudeChin, forKey: "claudeChin")
+            ClaudeWatch.shared.setEnabled(claudeChin)
+        }
+    }
 
     let kokoroInstalled: Bool
     @Published private(set) var sayVoices: [String] = []
@@ -3450,6 +4366,7 @@ final class SettingsStore: ObservableObject {
             ?? (storedHUD == "frosted" ? .classic
                 : storedHUD == "liquidGlass" ? .glassy : HUDStyle.defaultStyle)
         hudVisibility = UserDefaults.standard.string(forKey: "hudVisibility").flatMap(HUDVisibility.init) ?? .whileSpeaking
+        claudeChin = UserDefaults.standard.bool(forKey: "claudeChin")
         loading = false
         // screenshots need the opaque surface: glass bakes whatever desktop was
         // behind it into the capture (didSet is inert while loading, no persist)
@@ -3466,6 +4383,7 @@ final class SettingsStore: ObservableObject {
         sayRate = read("speak-rate")
         speakWhen = SpeakWhen(rawValue: read("speak-when")) ?? .end
         nameFirst = FileManager.default.fileExists(atPath: path("speak-name-first"))
+        readHeadless = FileManager.default.fileExists(atPath: path("speak-headless"))
         loading = false
     }
 
@@ -3807,11 +4725,11 @@ final class VoicePreviewer: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
 struct SettingsView: View {
     @ObservedObject var settings = SettingsStore.shared
-    @ObservedObject var deck = Deck.shared
     @ObservedObject var previewer = VoicePreviewer.shared
     @ObservedObject var updater = Updater.shared
     // Inline "Copied." confirmation on the Claude-prompt button; clears itself.
     @State private var promptCopied = false
+    @State private var mergePromptCopied = false
     // "Up to date ✓" after an explicit check. Drawn as an OVERLAY above the
     // button, not as a row beneath it: a new row grew the window and made the
     // whole panel jump, which is what Adam objected to (2026-08-25).
@@ -3866,6 +4784,9 @@ struct SettingsView: View {
                 }
                 Toggle("Say the session name first", isOn: $settings.nameFirst)
                     .accessibilityHint("Each reply opens with its session name, so you can tell which project is talking.")
+                Toggle("Read scripted runs too (claude -p)", isOn: $settings.readHeadless)
+                    .help("Off: runs started by scripts, scheduled jobs or apps with claude -p or the Agent SDK stay silent. Turn on if an app you chat in runs Claude that way.")
+                    .accessibilityHint("Off keeps claude -p and Agent SDK runs silent. Turn on if an app you chat in runs Claude that way.")
             }
             // Speed, Volume and Mute used to have a Playback section here.
             // They are all on the deck's own panel, a click away, so a second
@@ -3903,6 +4824,12 @@ struct SettingsView: View {
                 Picker("Show mini player", selection: $settings.hudVisibility) {
                     ForEach(HUDVisibility.allCases) { Text($0.label).tag($0) }
                 }
+            }
+            Section("Claude") {
+                Toggle("Show Claude usage, status and version in the deck", isOn: $settings.claudeChin)
+                Text("Three dials for your plan usage, three dots for status.claude.com, and your Claude Code version, along the bottom of the deck. It uses your Claude Code sign-in to ask Anthropic for your usage, every 5 minutes.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             // Version, updating and reporting a problem all live here: the
             // status-item menu used to carry them and grew too tall to fit on
@@ -3978,6 +4905,22 @@ struct SettingsView: View {
                             .buttonStyle(.borderedProminent)
                         Text("The last try failed: \(reason)")
                             .font(.caption).foregroundStyle(.red)
+                    case .localChanges:
+                        Text("Your copy of SpeakySpeak has changes of its own that clash with \(v). Nothing was changed. Paste this prompt into Claude Code and it will merge the update and keep your changes.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 10) {
+                            Button(mergePromptCopied ? "Copied" : "Copy the prompt for Claude") {
+                                let pb = NSPasteboard.general
+                                pb.clearContents()
+                                pb.setString(Updater.mergePrompt(version: v), forType: .string)
+                                mergePromptCopied = true
+                                AccessibilityNotification.Announcement("Prompt copied. Paste it into Claude Code.").post()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 6) { mergePromptCopied = false }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button("Try again") { Updater.shared.performUpdate() }
+                        }
                     case .idle:
                         Button("Update to \(v)…") { Updater.shared.performUpdate() }
                             .buttonStyle(.borderedProminent)
@@ -4022,6 +4965,11 @@ struct SettingsView: View {
             // screenshot staging: the settings scene shows the up-to-date
             // flash so its placement is capturable (and verifiable)
             if demoScene == "settings" { upToDate = true }
+            // SPEAKYSPEAK_DEMO_UPDATE=clash stages the "your edits clash with
+            // the update" state for a screenshot; never set in normal use
+            if demoScene != nil, ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_UPDATE"] == "clash" {
+                updater.stageDemoClash()
+            }
         }
         // fires when a check finishes; only meaningful when it found nothing,
         // since finding something swaps the row for the update controls
@@ -4216,6 +5164,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             forName: .speakyHUDPreview, object: nil, queue: .main) { [weak self] _ in
             self?.updateHUD()
         }
+        NotificationCenter.default.addObserver(
+            forName: .speakyOpenDeck, object: nil, queue: .main) { [weak self] _ in
+            guard let self, !self.popover.isShown, let b = self.statusItem?.button else { return }
+            self.togglePopover(b)
+        }
         // the icon is no longer a template, so nothing re-tints it for us
         DistributedNotificationCenter.default.addObserver(
             forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
@@ -4268,6 +5221,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         Deck.shared.start()
         refreshStatus()
         if demoScene == nil { Updater.shared.start() }
+        if demoScene == nil && SettingsStore.shared.claudeChin { ClaudeWatch.shared.setEnabled(true) }
+        // the mini player's strip comes and goes with the setting: resize the panel to fit
+        SettingsStore.shared.$claudeChin.dropFirst().removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { _ in DispatchQueue.main.async { MiniHUDController.shared.refit() } }
+            .store(in: &bag)
+        // the Claude dot on the mark: repaint when it appears, clears or is seen
+        let watch = ClaudeWatch.shared
+        watch.$flag.removeDuplicates().map { _ in () }
+            .merge(with: watch.$attention.removeDuplicates().map { _ in () })
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.refreshStatus() }
+            .store(in: &bag)
 
         // Rebuild the icon only on discrete state changes — not on every
         // progress/level tick (the pulse handles loudness separately).
@@ -4284,6 +5250,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // currentID: a skip while already playing changes the reply without
         // toggling isPlaying — Now Playing needs the new title/duration
         .merge(with: deck.$currentID.removeDuplicates().map { _ in () })
+        // the chime gap ending without a next reply lets the mini player go
+        .merge(with: deck.$advancePending.removeDuplicates().map { _ in () })
         // …and the ↑ update hint the moment the daily check finds one
         .merge(with: Updater.shared.$availableVersion.removeDuplicates().map { _ in () })
         .receive(on: DispatchQueue.main)
@@ -4365,11 +5333,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let previewing = SettingsWindowController.shared.isOpen
         let always = (SettingsStore.shared.hudVisibility == .always || previewing) && !popover.isShown
         let desired = !popover.isShown &&
-            (always || d.isPlaying || d.isPausedMidItem || (MiniHUDController.shared.isVisible && d.hasQueued))
+            (always || d.isPlaying || d.isPausedMidItem || (MiniHUDController.shared.isVisible && d.advancePending))
         MiniHUDController.shared.setDesiredVisible(desired, always: always, currentID: d.currentID, anchor: statusItem?.button)
     }
 
-    func popoverDidShow(_ notification: Notification) { updateHUD() }
+    func popoverDidShow(_ notification: Notification) {
+        updateHUD()
+        ClaudeWatch.shared.refreshIfStale()
+    }
     func popoverDidClose(_ notification: Notification) { updateHUD() }
 
     // Left-click toggles the deck; right- or ctrl-click shows the menu.
@@ -4450,9 +5421,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                        silenced: silenced, on: button)
         }
         drawnAppearance = button.effectiveAppearance.name
+        syncFlagBlink()
 
         var parts: [String] = []
         var tip = stateTooltip(deck, queued: queued)
+        let watch = ClaudeWatch.shared
+        if let f = watch.flag {
+            let down = watch.services.filter { !$0.ok }.map { "\($0.name) \($0.words)" }
+            tip += f == .trouble ? "\nClaude: \(down.joined(separator: ", "))."
+                                 : "\nClaude Code \(watch.latest ?? "") is out."
+        }
         // A waiting update gets a persistent ↑ next to the icon, so it's
         // visible without opening the menu; the tooltip says what to do.
         if let v = Updater.shared.availableVersion {
@@ -4501,6 +5479,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // inside the button's own effective appearance and NSColor.labelColor
     // resolves to whatever the menu bar actually is. AppleInterfaceThemeChanged
     // re-renders it (see start()).
+    // The Claude dot: blue when a Claude Code release is out, red when a
+    // watched service is down. It blinks until the chin is hovered, then holds
+    // steady until the cause clears. Drawn inside the mark's own bounds, like
+    // the count, so the item never changes width.
+    private var flagTimer: Timer?
+    private var flagLit = true
+    private var flagColor: NSColor? {
+        switch ClaudeWatch.shared.flag {
+        case .trouble?: return NSColor(calibratedRed: 0.82, green: 0.26, blue: 0.19, alpha: 1)
+        case .update?:  return NSColor(calibratedRed: 0.20, green: 0.46, blue: 0.82, alpha: 1)
+        case nil:       return nil
+        }
+    }
+    private func syncFlagBlink() {
+        let want = ClaudeWatch.shared.attention && ClaudeWatch.shared.flag != nil
+        if want, flagTimer == nil {
+            let t = Timer(timeInterval: 0.8, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                self.flagLit.toggle()
+                // while playing, the pulse redraws the icon and picks this up
+                if !Deck.shared.isPlaying, let button = self.statusItem?.button {
+                    let deck = Deck.shared
+                    let queued = deck.items.filter { $0.state == .queued && !deck.isSessionMuted($0) }.count
+                    button.image = self.statusImage(base: self.syGlyph, count: queued,
+                                                    silenced: !deck.enabled || deck.muted || deck.isPausedMidItem,
+                                                    on: button)
+                }
+            }
+            RunLoop.main.add(t, forMode: .common)
+            flagTimer = t
+        } else if !want, let t = flagTimer {
+            t.invalidate()
+            flagTimer = nil
+            flagLit = true
+        }
+    }
+
     private func statusImage(base: NSImage, count: Int, silenced: Bool,
                              on button: NSStatusBarButton) -> NSImage {
         let size = base.size
@@ -4543,6 +5558,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 NSGraphicsContext.current?.compositingOperation = .sourceOver
                 line.lineWidth = 1.6
                 line.stroke()
+            }
+            if let c = flagColor {
+                let d: CGFloat = 5.5
+                let dot = NSRect(x: size.width - d, y: 0, width: d, height: d)
+                NSGraphicsContext.current?.compositingOperation = .clear
+                NSBezierPath(ovalIn: dot.insetBy(dx: -1.2, dy: -1.2)).fill()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+                c.withAlphaComponent(flagLit ? 1 : 0.25).setFill()
+                NSBezierPath(ovalIn: dot).fill()
             }
         }
         img.unlockFocus()
@@ -4596,9 +5620,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func startPulse() {
         guard pulseTimer == nil else { return }
-        pulseTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15, repeats: true) { [weak self] _ in
+        // 10 Hz, not 15: every new image makes the system re-snapshot the
+        // menu-bar item for each display, which was ~22% of the main thread
+        // during speech (2026-09-24). The phase step grew to keep the speed.
+        pulseTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 10, repeats: true) { [weak self] _ in
             guard let self, let button = self.statusItem?.button else { return }
-            self.pulsePhase += 0.5
+            self.pulsePhase += 0.75
             button.alphaValue = 1.0
             let bars = self.eqGlyph(level: Deck.shared.level, phase: self.pulsePhase)
             let waiting = Deck.shared.items.filter {
