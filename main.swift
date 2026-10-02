@@ -3549,6 +3549,10 @@ final class ClaudeWatch: ObservableObject {
     @Published private(set) var checkedAt: Date?
     @Published private(set) var flag: Flag?
     @Published private(set) var attention = false
+    /// The Claude Code version that arrived since the deck was last opened.
+    /// Claude Code updates itself within a minute of a release, so on most
+    /// Macs "is out" never shows; this says "it came" instead.
+    @Published private(set) var freshVersion = UserDefaults.standard.string(forKey: "claudeFreshVersion")
 
     static let changelogPage = URL(string: "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md")!
     private let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
@@ -3568,10 +3572,41 @@ final class ClaudeWatch: ObservableObject {
     private var usageRetryAt: Date?
     private var versionAt: Date?
     private let seenKey = "claudeSeenSignals"
+    private let lastInstalledKey = "claudeLastInstalled"
 
     var updateOut: Bool {
         guard let i = installed, let l = latest else { return false }
         return Updater.newer(l, than: i)
+    }
+
+    /// Installed and new since the deck was last opened (cleared on close).
+    var justUpdated: Bool { !updateOut && freshVersion != nil && freshVersion == installed }
+
+    /// What the version badge means, in words, for tooltips and VoiceOver.
+    var versionWords: String {
+        let v = installed ?? latest ?? ""
+        if updateOut { return "Claude Code \(latest ?? "") is out. You have \(installed ?? "an older one")." }
+        if justUpdated { return "Claude Code updated itself to \(v). What's new has the details." }
+        return "Claude Code \(v), the newest."
+    }
+
+    /// A newer `claude --version` than last time marks it fresh; the very
+    /// first reading only records, since nothing is news yet.
+    private func noteInstalled(_ v: String) {
+        let d = UserDefaults.standard
+        let last = d.string(forKey: lastInstalledKey)
+        d.set(v, forKey: lastInstalledKey)
+        if let last, Updater.newer(v, than: last) {
+            freshVersion = v
+            d.set(v, forKey: "claudeFreshVersion")
+        }
+    }
+
+    /// The deck closed after showing the fresh version: it has been seen.
+    func freshSeen() {
+        guard freshVersion != nil else { return }
+        freshVersion = nil
+        UserDefaults.standard.removeObject(forKey: "claudeFreshVersion")
     }
 
     func setEnabled(_ on: Bool) {
@@ -3654,7 +3689,7 @@ final class ClaudeWatch: ObservableObject {
                 let installed = Self.installedVersion()
                 DispatchQueue.main.async {
                     if let latest { self.latest = latest; self.versionAt = Date() }
-                    if let installed { self.installed = installed }
+                    if let installed { self.installed = installed; self.noteInstalled(installed) }
                     group.leave()
                 }
             }
@@ -3674,6 +3709,7 @@ final class ClaudeWatch: ObservableObject {
     private var signals: Set<String> {
         var s = Set<String>()
         if updateOut, let l = latest { s.insert("update \(l)") }
+        if justUpdated, let f = freshVersion { s.insert("updated \(f)") }
         for svc in services where !svc.ok { s.insert("\(svc.name) \(svc.status)") }
         return s
     }
@@ -4086,7 +4122,7 @@ struct ClaudeChin: View {
                     Text(watch.updateOut ? (watch.latest ?? v) : v)
                         .font(.system(size: 11, weight: .medium).monospacedDigit())
                         .foregroundStyle(theme.text)
-                    if watch.updateOut {
+                    if watch.updateOut || watch.justUpdated {
                         Text("NEW")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(.white)
@@ -4102,12 +4138,8 @@ struct ClaudeChin: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(watch.updateOut
-                  ? "Claude Code \(watch.latest ?? "") is out. You have \(watch.installed ?? "an older one")."
-                  : "Claude Code \(v), the newest.")
-            .accessibilityLabel(watch.updateOut
-                  ? "Claude Code \(watch.latest ?? "") is out. You have \(watch.installed ?? "an older one")."
-                  : "Claude Code \(v), up to date.")
+            .help(watch.versionWords)
+            .accessibilityLabel(watch.versionWords)
         }
     }
 
@@ -4171,6 +4203,7 @@ struct ClaudeChin: View {
                 sectionLabel("Claude Code")
                 Text(watch.updateOut
                      ? "\(watch.installed ?? "?") installed, \(watch.latest ?? "?") out"
+                     : watch.justUpdated ? "\(watch.installed ?? "?"), just arrived"
                      : "\(watch.installed ?? watch.latest ?? "?"), the newest")
                     .font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(theme.text)
@@ -4241,7 +4274,7 @@ struct ClaudeStrip: View {
                     Text(watch.updateOut ? (watch.latest ?? v) : v)
                         .font(.system(size: 10, weight: .medium).monospacedDigit())
                         .foregroundStyle(ink)
-                    if watch.updateOut {
+                    if watch.updateOut || watch.justUpdated {
                         Text("NEW")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundStyle(.white)
@@ -4253,8 +4286,7 @@ struct ClaudeStrip: View {
                             .foregroundStyle(pal.ok)
                     }
                 }
-                .help(watch.updateOut ? "Claude Code \(watch.latest ?? "") is out. You have \(watch.installed ?? "an older one")."
-                                      : "Claude Code \(v), the newest.")
+                .help(watch.versionWords)
             }
         }
         .frame(height: 36)
@@ -4291,7 +4323,7 @@ struct ClaudeStrip: View {
         let down = watch.services.filter { !$0.ok }
         parts.append(down.isEmpty ? "Claude services operational"
                                   : down.map { "\($0.name) \($0.words)" }.joined(separator: ", "))
-        if watch.updateOut { parts.append("Claude Code \(watch.latest ?? "") is out") }
+        if watch.updateOut || watch.justUpdated { parts.append(watch.versionWords) }
         return "Claude: " + parts.joined(separator: ". ")
     }
 }
@@ -4853,10 +4885,16 @@ struct SettingsView: View {
     // whole panel jump, which is what Adam objected to (2026-08-25).
     @State private var upToDate = false
 
+    // SPEAKYSPEAK_DEMO_UPDATED_FROM stages the post-update lines for screenshots
+    private var updatedFrom: String? {
+        updater.justUpdatedFrom
+            ?? (demoScene != nil ? ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_UPDATED_FROM"] : nil)
+    }
+
     private var versionLabel: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("SpeakySpeak \(updater.localVersion)")
-            if let from = updater.justUpdatedFrom {
+            if let from = updatedFrom {
                 Text("updated from \(from) ✓")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -4988,6 +5026,13 @@ struct SettingsView: View {
                     }
                 } else {
                     versionLabel
+                }
+                // the moment after an update is when people notice what
+                // changed, so the way to answer sits right there (Adam, 2026-10-02)
+                if updatedFrom != nil {
+                    Text("Ideas or problems? Email [\(Feedback.address)](mailto:\(Feedback.address)?subject=SpeakySpeak%20\(updater.localVersion)) and a human reads it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 LabeledContent {
                     Button("Open the tour") {
@@ -5459,7 +5504,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         updateHUD()
         ClaudeWatch.shared.refreshIfStale()
     }
-    func popoverDidClose(_ notification: Notification) { updateHUD() }
+    func popoverDidClose(_ notification: Notification) {
+        updateHUD()
+        ClaudeWatch.shared.freshSeen()
+    }
 
     // Left-click toggles the deck; right- or ctrl-click shows the menu.
     @objc private func statusClicked(_ sender: NSStatusBarButton) {

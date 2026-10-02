@@ -2,6 +2,12 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.22 (2026-10-02)
+
+**Claude Code updates show up again.** Claude Code updates itself within a minute of a release, so the old "a new version is out" badge almost never showed. Now, when Claude Code updates itself, the version in the Claude section gets a blue NEW badge until you next open and close the deck, and the details say "just arrived" next to a What's new link. If your Claude Code doesn't update itself, you still see "is out" as before.
+
+**Tell me what you think.** Ideas, problems, anything that bugs you: email hi@speakyspeak.com and a human reads every one. After an update, Settings shows the address right under the version, and Settings ▸ Report an issue ▸ Email draft pre-fills a report with your version and recent log lines.
+
 ## 1.2.21 (2026-10-02)
 
 **Check now really checks.** The refresh arrow in the Claude section now reads the newest Claude Code version straight from GitHub every time you press it, and asks `claude --version` again. Before, a press could show a copy of GitHub's changelog up to 5 minutes old, and the Claude Code line only moved every 30 minutes. The automatic checks work as before.
