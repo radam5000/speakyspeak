@@ -303,7 +303,7 @@ If this Mac and another Mac both run SpeakySpeak and share AirPods, they can tak
 echo "<other-mac-ip>" > ~/.claude/speak-peer
 ```
 
-Before auto-playing, each Mac asks the peer (TCP port 48765) and waits if the peer is currently speaking, so macOS's AirPods auto-switching hands off cleanly instead of overlapping. Manual plays (clicking a queued item) never wait. If the file is absent, the peer is off, or it's unreachable, the app just plays — this fails open and is skippable if only one Mac is in use.
+Before auto-playing, each Mac asks the peer (TCP port 48765) and waits if the peer is currently speaking, so macOS's AirPods auto-switching hands off cleanly instead of overlapping. Manual plays (clicking a queued item) never wait. If the file is absent, the peer is off, or it's unreachable, the app just plays — this fails open and is skippable if only one Mac is in use. The listener stays off the local network: without the file it is on 127.0.0.1 only, and with it on the address that reaches the peer (the Tailscale one), answering only the peer.
 
 ---
 

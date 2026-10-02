@@ -1161,12 +1161,22 @@ final class NowPlayingBridge {
 // offline machine never silences its own deck. "playing" means sound is
 // actually moving (Deck.audioFlowing), not the flag: a peer frozen mid-reply
 // by lid-close sleep answered "playing" for 70 minutes on 2026-09-05.
+//
+// The listener never sits on the Wi-Fi. With no peer it binds 127.0.0.1;
+// with one it binds the local address the kernel routes to the peer (the
+// Tailscale one) and answers only the peer and loopback. Until 2026-10-01 it
+// bound every interface, so anyone on the same Wi-Fi could ask. Rechecked
+// every 30 s, since Tailscale comes and goes and the dotfile can change.
 final class PeerGate {
     static let shared = PeerGate()
     private let port: NWEndpoint.Port = 48765
     private let peerPath = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".claude/speak-peer").path
+    private static let loopback = Data([127, 0, 0, 1])
     private var listener: NWListener?
+    private var boundAddress = Data()   // raw IP the listener is on now
+    private var peerAddress: Data?      // raw IP of the peer, the only remote let in
+    private var timer: Timer?
     private init() {}
 
     // re-read per check so editing the dotfile needs no app restart
@@ -1177,19 +1187,112 @@ final class PeerGate {
     }
 
     func start() {
-        guard let l = try? NWListener(using: .tcp, on: port) else {
-            dlog("peer gate: listener failed to start"); return
+        reconcile()
+        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.reconcile()
+        }
+    }
+
+    // The route lookup runs off main (a hostname in speak-peer means DNS);
+    // the rebind happens on main with everything else.
+    private func reconcile() {
+        let host = peerHost
+        DispatchQueue.global(qos: .utility).async {
+            let route = host.flatMap(Self.route(to:))
+            DispatchQueue.main.async { self.bind(route) }
+        }
+    }
+
+    private func bind(_ route: (local: Data, peer: Data)?) {
+        peerAddress = route?.peer
+        let want = route?.local ?? Self.loopback
+        if listener != nil && want == boundAddress { return }
+        listener?.cancel(); listener = nil
+        let host: NWEndpoint.Host = want.count == 4
+            ? .ipv4(IPv4Address(want)!) : .ipv6(IPv6Address(want)!)
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = .hostPort(host: host, port: port)
+        params.allowLocalEndpointReuse = true
+        guard let l = try? NWListener(using: params) else {
+            dlog("peer gate: listener failed to start on \(host)"); return
         }
         // everything runs on main so reading Deck state is race-free; the
         // exchange is a handful of bytes, nothing here blocks
-        l.newConnectionHandler = { conn in
+        l.newConnectionHandler = { [weak self] conn in
+            guard let self, self.allowed(conn.endpoint) else { conn.cancel(); return }
             conn.start(queue: .main)
             let state = (Deck.shared.audioFlowing ? "playing" : "idle") + "\n"
             conn.send(content: state.data(using: .utf8),
                       completion: .contentProcessed { _ in conn.cancel() })
         }
+        // a vanished address (Tailscale quit) fails the listener; the next
+        // reconcile starts a fresh one
+        l.stateUpdateHandler = { [weak self, weak l] state in
+            guard case .failed(let err) = state, let self, let l, self.listener === l else { return }
+            dlog("peer gate: listener on \(host) failed: \(err)")
+            self.listener = nil
+        }
+        listener = l
+        boundAddress = want
         l.start(queue: .main)
-        dlog("peer gate: listening on \(port), peer \(peerHost ?? "none configured")")
+        dlog("peer gate: listening on \(host):\(port), peer \(peerHost ?? "none configured")")
+    }
+
+    private func allowed(_ endpoint: NWEndpoint) -> Bool {
+        guard case .hostPort(let host, _) = endpoint else { return false }
+        switch host {
+        case .ipv4(let a): return a.isLoopback || a.rawValue == peerAddress
+        case .ipv6(let a): return a.isLoopback || a.rawValue == peerAddress
+        default: return false
+        }
+    }
+
+    // The local address the kernel would use to reach `host`, and the peer's
+    // own raw IP. Connecting a UDP socket sends nothing; it only picks a
+    // route. nil when the peer doesn't resolve or has no route, and when a
+    // Tailscale peer's route leaves Tailscale: with Tailscale off, 100.x goes
+    // out the default route and we would land back on the Wi-Fi.
+    static func route(to host: String) -> (local: Data, peer: Data)? {
+        var hints = addrinfo()
+        hints.ai_socktype = SOCK_DGRAM
+        var res: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, "48765", &hints, &res) == 0, let ai = res?.pointee else { return nil }
+        defer { freeaddrinfo(res) }
+        let fd = socket(ai.ai_family, SOCK_DGRAM, 0)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        guard connect(fd, ai.ai_addr, ai.ai_addrlen) == 0 else { return nil }
+        var local = sockaddr_storage()
+        var len = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let got = withUnsafeMutablePointer(to: &local) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) }
+        }
+        guard got == 0,
+              let peer = rawIP(ai.ai_addr),
+              let mine = withUnsafePointer(to: &local, {
+                  $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { rawIP($0) } })
+        else { return nil }
+        if isTailscale(peer) && !isTailscale(mine) { return nil }
+        return (mine, peer)
+    }
+
+    private static func rawIP(_ sa: UnsafePointer<sockaddr>) -> Data? {
+        switch Int32(sa.pointee.sa_family) {
+        case AF_INET:
+            return sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                withUnsafeBytes(of: $0.pointee.sin_addr) { Data($0) } }
+        case AF_INET6:
+            return sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) {
+                withUnsafeBytes(of: $0.pointee.sin6_addr) { Data($0) } }
+        default: return nil
+        }
+    }
+
+    // 100.64.0.0/10 and fd7a:115c:a1e0::/48
+    private static func isTailscale(_ ip: Data) -> Bool {
+        let b = [UInt8](ip)
+        if b.count == 4 { return b[0] == 100 && b[1] & 0xC0 == 64 }
+        return b.starts(with: [0xfd, 0x7a, 0x11, 0x5c, 0xa1, 0xe0])
     }
 
     // Is the peer deck speaking right now? Completion always fires, on main.
@@ -3813,7 +3916,7 @@ func resetsText(_ d: Date?) -> String {
 struct UsageDial: View {
     let limit: ClaudeWatch.Limit
     let rolled: Bool
-    let ink: AnyShapeStyle      // the number, when usage is fine
+    let ink: AnyShapeStyle      // the number, always: the ring carries the warning color
     let faint: AnyShapeStyle    // the label
     let track: Color
     let palette: ChinPalette
@@ -3822,7 +3925,6 @@ struct UsageDial: View {
     var body: some View {
         let shown = rolled ? limit.percent : 0
         let color = palette.usage(limit)
-        let hot = color != palette.ok
         let line: CGFloat = size >= 30 ? 3 : 2.4
         VStack(spacing: 1) {
             ZStack {
@@ -3832,10 +3934,12 @@ struct UsageDial: View {
                 Circle().trim(from: 0, to: 0.75 * CGFloat(shown) / 100)
                     .stroke(color, style: StrokeStyle(lineWidth: line, lineCap: .round))
                     .rotationEffect(.degrees(135))
-                // the digits roll like an odometer when the deck opens
+                // the digits roll like an odometer when the deck opens. Always
+                // ink, never the warning color: orange digits on the grey glass
+                // were unreadable (Adam, 2026-10-01)
                 Text("\(shown)")
-                    .font(.system(size: size >= 30 ? 10.5 : 8.5, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(hot ? AnyShapeStyle(color) : ink)
+                    .font(.system(size: size >= 30 ? 11.5 : 9.5, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(ink)
                     .contentTransition(.numericText(value: Double(shown)))
             }
             .frame(width: size, height: size)
@@ -4020,7 +4124,7 @@ struct ClaudeChin: View {
                             .frame(height: 4)
                             Text("\(l.percent)%")
                                 .font(.system(size: 11, weight: .semibold).monospacedDigit())
-                                .foregroundStyle(pal.usage(l) == pal.ok ? theme.text : pal.usage(l))
+                                .foregroundStyle(theme.text)
                                 .frame(width: 34, alignment: .trailing)
                         }
                         Text(resetsText(l.resetsAt)).font(.system(size: 9.5)).foregroundStyle(theme.secondary)

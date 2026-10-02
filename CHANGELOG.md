@@ -2,6 +2,12 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.20 (2026-10-01)
+
+**The two-Mac handoff stays off your Wi-Fi.** SpeakySpeak opens a small port (48765) so two Macs sharing one pair of AirPods can take turns. It used to listen on every network the Mac was on, so anyone on the same Wi-Fi could ask whether your Mac was speaking. Now it listens on this Mac only (127.0.0.1). If you set up a second Mac in `~/.claude/speak-peer`, it listens on the address that reaches that Mac (your Tailscale address) and answers that Mac alone; if Tailscale is off, it goes back to this Mac only. Nothing to change on your side.
+
+**Usage numbers are easier to read.** The numbers in the Claude usage dials stay in the normal text colour and are one point larger. Only the ring turns orange or red as you near a limit.
+
 ## 1.2.19 (2026-09-25)
 
 **Scripted Claude runs stay quiet.** A `claude -p` run (a commit-message script, a cron job, anything scheduled) or a program built on the Agent SDK is no longer read aloud. Claude Code marks these runs itself, so nothing needs setting up. The terminal, the desktop app, VS Code and Cursor are read exactly as before. If you chat through an app that runs Claude with `claude -p`, turn on Settings ▸ Speech ▸ "Read scripted runs too". `hook.log` says when it quieted a run and why.
