@@ -3553,12 +3553,17 @@ final class ClaudeWatch: ObservableObject {
     static let changelogPage = URL(string: "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md")!
     private let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     private let changelogURL = URL(string: "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md")!
+    // the API reads the repo itself; raw.githubusercontent's CDN keeps a copy
+    // for 5 minutes and ignores query strings, so a cache-buster does nothing.
+    // 60 unauthenticated calls an hour, so only a press of Check now uses it.
+    private let changelogAPI = URL(string: "https://api.github.com/repos/anthropics/claude-code/contents/CHANGELOG.md")!
     private let statusURL = URL(string: "https://status.claude.com/api/v2/summary.json")!
     // matched by substring, so a renamed component still lands
     private let wanted = ["Claude Code", "claude.ai", "Claude API"]
 
     private var timer: Timer?
     private var busy = false
+    private var forceQueued = false
     private var usageAt: Date?
     private var usageRetryAt: Date?
     private var versionAt: Date?
@@ -3593,8 +3598,12 @@ final class ClaudeWatch: ObservableObject {
         refresh()
     }
 
-    func refresh() {
-        guard enabled, !busy else { return }
+    /// `force` is Check now: the versions are read again from GitHub itself,
+    /// whatever the 30-minute clock says, and a press during a running check
+    /// queues one more instead of being dropped.
+    func refresh(force: Bool = false) {
+        guard enabled else { return }
+        if busy { if force { forceQueued = true }; return }
         busy = true
         let group = DispatchGroup()
         let now = Date()
@@ -3638,10 +3647,10 @@ final class ClaudeWatch: ObservableObject {
         }
 
         // the changelog and `claude --version` move slowly: every 30 minutes
-        if versionAt.map({ now.timeIntervalSince($0) >= 30 * 60 }) ?? true {
+        if force || versionAt.map({ now.timeIntervalSince($0) >= 30 * 60 }) ?? true {
             group.enter()
             DispatchQueue.global(qos: .utility).async {
-                let latest = try? self.loadLatest()
+                let latest = try? self.loadLatest(fresh: force)
                 let installed = Self.installedVersion()
                 DispatchQueue.main.async {
                     if let latest { self.latest = latest; self.versionAt = Date() }
@@ -3655,6 +3664,7 @@ final class ClaudeWatch: ObservableObject {
             self.busy = false
             self.checkedAt = Date()
             self.recompute()
+            if self.forceQueued { self.forceQueued = false; self.refresh(force: true) }
         }
     }
 
@@ -3764,8 +3774,11 @@ final class ClaudeWatch: ObservableObject {
         return (out, incidents)
     }
 
-    private func loadLatest() throws -> String {
-        let data = try Self.fetch(changelogURL)
+    private func loadLatest(fresh: Bool = false) throws -> String {
+        // fresh falls back to the CDN copy when the API refuses (rate limit)
+        let data = fresh
+            ? try (try? Self.fetch(changelogAPI, headers: ["Accept": "application/vnd.github.raw"])) ?? Self.fetch(changelogURL)
+            : try Self.fetch(changelogURL)
         guard let text = String(data: data, encoding: .utf8) else { throw Plain("The changelog was not text.") }
         for line in text.components(separatedBy: .newlines) where line.hasPrefix("## ") {
             if let v = Self.firstVersion(in: line) { return v }
@@ -3796,7 +3809,8 @@ final class ClaudeWatch: ObservableObject {
 
     /// Blocking GET with a 10s timeout; background queues only.
     static func fetch(_ url: URL, headers: [String: String] = [:]) throws -> Data {
-        var req = URLRequest(url: url, timeoutInterval: 10)
+        // never answer from URLSession's own disk cache, which honors max-age
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
         req.setValue("SpeakySpeak", forHTTPHeaderField: "User-Agent")
         req.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
@@ -4170,7 +4184,7 @@ struct ClaudeChin: View {
                     .font(.system(size: 9.5))
                     .foregroundStyle(theme.secondary)
                 Spacer()
-                Button(action: { watch.refresh() }) {
+                Button(action: { watch.refresh(force: true) }) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(theme.secondary)

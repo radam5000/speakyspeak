@@ -2,6 +2,10 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.21 (2026-10-02)
+
+**Check now really checks.** The refresh arrow in the Claude section now reads the newest Claude Code version straight from GitHub every time you press it, and asks `claude --version` again. Before, a press could show a copy of GitHub's changelog up to 5 minutes old, and the Claude Code line only moved every 30 minutes. The automatic checks work as before.
+
 ## 1.2.20 (2026-10-01)
 
 **The two-Mac handoff stays off your Wi-Fi.** SpeakySpeak opens a small port (48765) so two Macs sharing one pair of AirPods can take turns. It used to listen on every network the Mac was on, so anyone on the same Wi-Fi could ask whether your Mac was speaking. Now it listens on this Mac only (127.0.0.1). If you set up a second Mac in `~/.claude/speak-peer`, it listens on the address that reaches that Mac (your Tailscale address) and answers that Mac alone; if Tailscale is off, it goes back to this Mac only. Nothing to change on your side.
