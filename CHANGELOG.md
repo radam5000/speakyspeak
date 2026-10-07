@@ -2,6 +2,14 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.24 (2026-10-07)
+
+**The progress line no longer waits for a hover.** 1.2.23 fixed one cause, but the line could still stall until the pointer went over it. It is now drawn directly by the playback clock instead of waiting for the window to redraw, so it moves on its own however the rest of the window is doing.
+
+**No more box around the Claude strip.** When Claude Code updated itself or a Claude service had trouble, a pulsing frame appeared around the usage dials in the mini player and the deck until you hovered over them. It looked like a glitch and kept the app busy while it pulsed. It's gone: the NEW badge, the coloured status dots and the dot on the menu-bar icon already say what changed.
+
+**Two Macs take turns more reliably.** When both Macs wanted to start a reply at the same moment, each could hear "the other one is quiet" and both spoke. Now one goes first and the other waits. A Mac also waits a little longer for the other's answer when Tailscale is routing through a relay, and `deck.log` now says when the other Mac could not be reached ("peer check: ..."), the usual reason both speak at once.
+
 ## 1.2.23 (2026-10-07)
 
 **The progress line keeps moving.** The line under the mini player (and the one in the deck) could sit still while a reply was being read, and only caught up when you moved the pointer over it. It now moves smoothly the whole time. Seen on two Macs; the cause was in how the line was redrawn, not in playback.

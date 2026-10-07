@@ -171,8 +171,12 @@ struct SpeechItem: Identifiable, Equatable {
 // Deck.progress for why they are not on Deck.
 final class PlayMeter: ObservableObject {
     static let shared = PlayMeter()
-    @Published var progress: Double = 0
+    // every write moves the progress lines directly (ProgressLineNote)
+    @Published var progress: Double = 0 { didSet { ProgressLineView.pushAll() } }
     @Published var level: Double = 0
+    // a copy of Deck.duration, so the lines never read Deck.shared from here
+    // (a read during Deck's own init traps; see the note on Deck.rate)
+    var duration: Double = 0 { didSet { ProgressLineView.pushAll() } }
 }
 
 // The only views that re-render on every meter tick: wrap the few pixels that
@@ -185,10 +189,98 @@ final class PlayMeter: ObservableObject {
 // cannot see), so both progress lines froze until a hover redrew the panel.
 // Measured with a probe build: 30 ticks and 60 reader bodies a second, 0 to 1
 // GeometryReader passes, and the line's pixels unchanged for 12 s.
+// That fix (1.2.23) passed every probe but Adam still saw the line stall in
+// real use, on both Macs, until a hover. So since 1.2.24 the two progress
+// lines are not SwiftUI drawing at all: ProgressLineView is three Core
+// Animation layers that every meter write moves directly (PlayMeter.progress
+// didSet → pushAll). Nothing waits for SwiftUI to notice a change or for
+// AppKit to run a display pass, which is the step a hover was kicking.
 struct MeterReader<Content: View>: View {
     @ObservedObject private var meter = PlayMeter.shared
     @ViewBuilder var content: (PlayMeter) -> Content
     var body: some View { content(meter) }
+}
+
+// The progress line as plain layers (see ProgressLineNote). It never takes
+// the mouse: the SwiftUI around it keeps the hover, the drag and VoiceOver.
+final class ProgressLineView: NSView {
+    struct Style: Equatable {
+        var track: CGColor
+        var lineHeight: CGFloat
+        var thumb: CGFloat
+        var thumbVisible: Bool
+        var minFill: CGFloat     // the deck's line never draws shorter than 4pt
+        var glow: Bool           // the mini player's line glows
+        var clampThumb: Bool     // the mini player keeps the thumb inside the line
+    }
+    private static let live = NSHashTable<ProgressLineView>.weakObjects()
+    static func pushAll() {
+        for v in live.allObjects { v.place() }
+    }
+
+    private let trackLayer = CALayer()
+    private let fillLayer = CAGradientLayer()
+    private let thumbLayer = CALayer()
+    private var style: Style?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = false
+        fillLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        fillLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        thumbLayer.shadowColor = NSColor.black.cgColor
+        thumbLayer.shadowRadius = 2
+        thumbLayer.shadowOffset = CGSize(width: 0, height: -1)
+        for l in [trackLayer, fillLayer, thumbLayer] { layer?.addSublayer(l) }
+        Self.live.add(self)
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func layout() { super.layout(); place() }
+
+    func apply(_ s: Style, animated: Bool) {
+        CATransaction.begin()
+        if animated { CATransaction.setAnimationDuration(0.12) } else { CATransaction.setDisableActions(true) }
+        let accent = NSColor(Theme.accent).cgColor
+        trackLayer.backgroundColor = s.track
+        fillLayer.colors = [accent, NSColor(Theme.accentDeep).cgColor]
+        fillLayer.shadowColor = accent
+        fillLayer.shadowOpacity = s.glow ? 0.8 : 0
+        fillLayer.shadowRadius = 4
+        fillLayer.shadowOffset = .zero
+        thumbLayer.backgroundColor = accent
+        thumbLayer.shadowOpacity = 0.28
+        thumbLayer.opacity = s.thumbVisible ? 1 : 0
+        style = s
+        place(animated: animated)
+        CATransaction.commit()
+    }
+
+    private func place(animated: Bool = false) {
+        guard let s = style else { return }
+        let m = PlayMeter.shared
+        let frac = m.duration > 0 ? CGFloat(min(1, max(0, m.progress / m.duration))) : 0
+        let w = bounds.width, mid = bounds.midY, h = s.lineHeight
+        if !animated { CATransaction.begin(); CATransaction.setDisableActions(true) }
+        trackLayer.frame = CGRect(x: 0, y: mid - h / 2, width: w, height: h)
+        trackLayer.cornerRadius = h / 2
+        fillLayer.frame = CGRect(x: 0, y: mid - h / 2, width: max(s.minFill, w * frac), height: h)
+        fillLayer.cornerRadius = h / 2
+        let x = s.clampThumb ? min(max(0, w * frac - s.thumb / 2), w - s.thumb) : w * frac - s.thumb / 2
+        thumbLayer.frame = CGRect(x: x, y: mid - s.thumb / 2, width: s.thumb, height: s.thumb)
+        thumbLayer.cornerRadius = s.thumb / 2
+        if !animated { CATransaction.commit() }
+    }
+}
+
+struct ProgressLine: NSViewRepresentable {
+    let style: ProgressLineView.Style
+    func makeNSView(context: Context) -> ProgressLineView { ProgressLineView() }
+    func updateNSView(_ v: ProgressLineView, context: Context) {
+        v.apply(style, animated: context.transaction.animation != nil)
+    }
 }
 
 struct LevelScale: ViewModifier {
@@ -217,7 +309,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         get { PlayMeter.shared.progress }
         set { PlayMeter.shared.progress = newValue }
     }
-    @Published var duration: Double = 0
+    @Published var duration: Double = 0 { didSet { PlayMeter.shared.duration = duration } }
     var level: Double {   // smoothed 0…1 speech loudness, drives the swirl
         get { PlayMeter.shared.level }
         set { PlayMeter.shared.level = newValue }
@@ -539,12 +631,19 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if let next = nextPlayable { autoplayGated(next) }
     }
 
+    // True while this deck is asking the peer whether it may start. A peer
+    // asking at the same moment is about to start too, so PeerGate settles
+    // the tie instead of both decks hearing "idle" and talking at once.
+    private(set) var claiming = false
+
     // Automatic starts wait for the peer Mac's deck to go quiet (PeerGate);
     // manual plays call play() directly and never wait. The peer check is
     // async, so every deck condition is re-checked when the answer lands.
     private func autoplayGated(_ item: SpeechItem) {
+        claiming = true
         PeerGate.shared.peerBusy { [weak self] busy in
             guard let self else { return }
+            self.claiming = false
             guard !self.muted, !self.isPlaying, !self.isPausedMidItem else { return }
             guard self.items.contains(where: { $0.id == item.id && $0.state == .queued }),
                   !self.isSessionMuted(item) else {
@@ -1165,7 +1264,7 @@ final class NowPlayingBridge {
 // Wire-up: ~/.claude/speak-peer holds the peer Mac's IP (Tailscale IP; no
 // file = no gating). Each deck also listens on TCP 48765 and answers any
 // connection with "playing\n" or "idle\n", then hangs up. Every check FAILS
-// OPEN — peer off, unreachable, or slow (>0.5s) counts as idle, so a solo or
+// OPEN — peer off, unreachable, or slow (>1.2s) counts as idle, so a solo or
 // offline machine never silences its own deck. "playing" means sound is
 // actually moving (Deck.audioFlowing), not the flag: a peer frozen mid-reply
 // by lid-close sleep answered "playing" for 70 minutes on 2026-09-05.
@@ -1229,7 +1328,7 @@ final class PeerGate {
         l.newConnectionHandler = { [weak self] conn in
             guard let self, self.allowed(conn.endpoint) else { conn.cancel(); return }
             conn.start(queue: .main)
-            let state = (Deck.shared.audioFlowing ? "playing" : "idle") + "\n"
+            let state = (self.busyAnswer() ? "playing" : "idle") + "\n"
             conn.send(content: state.data(using: .utf8),
                       completion: .contentProcessed { _ in conn.cancel() })
         }
@@ -1244,6 +1343,20 @@ final class PeerGate {
         boundAddress = want
         l.start(queue: .main)
         dlog("peer gate: listening on \(host):\(port), peer \(peerHost ?? "none configured")")
+    }
+
+    // What we tell the peer. Sound moving is "playing". So is the moment we
+    // are ourselves asking to start, if we win the tie: a question from the
+    // peer means it wants to start too, and before 1.2.24 both decks then
+    // heard "idle" and both spoke. The lower Tailscale address wins, so the
+    // two Macs always agree on who goes first; the other holds and re-asks.
+    private func busyAnswer() -> Bool {
+        let deck = Deck.shared
+        if deck.audioFlowing { return true }
+        guard deck.claiming, let peer = peerAddress else { return false }
+        let wins = boundAddress.lexicographicallyPrecedes(peer)
+        dlog("peer gate: both decks starting at once, \(wins ? "this one goes first" : "the peer goes first")")
+        return wins
     }
 
     private func allowed(_ endpoint: NWEndpoint) -> Bool {
@@ -1304,22 +1417,39 @@ final class PeerGate {
     }
 
     // Is the peer deck speaking right now? Completion always fires, on main.
+    // The wait is 1.2 s, not the 0.5 s it was until 1.2.24: when Tailscale
+    // has no direct path the Macs talk through a relay (the Air and the Pro
+    // went through "nyc" on 2026-10-07), a first connection there can take
+    // most of a second, and a check that gives up early answers "idle" and
+    // both Macs speak at once.
+    private var lastOutcome = ""
     func peerBusy(_ completion: @escaping (Bool) -> Void) {
         guard let host = peerHost else { completion(false); return }
         let conn = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
+        let asked = Date()
         var finished = false   // main-queue only — connection + timeout both land there
-        func finish(_ busy: Bool) {
+        func finish(_ busy: Bool, _ outcome: String) {
             guard !finished else { return }
             finished = true
             conn.cancel()
+            // one line whenever the answer changes kind, so an overlap can be
+            // traced to an unreachable peer instead of leaving no trace
+            if outcome != lastOutcome {
+                lastOutcome = outcome
+                dlog(String(format: "peer check: %@ (%.0f ms)", outcome, Date().timeIntervalSince(asked) * 1000))
+            }
             completion(busy)
         }
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 16) { data, _, _, _ in
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 16) { data, _, _, error in
             let s = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            finish(s.hasPrefix("playing"))
+            if s.hasPrefix("playing") { finish(true, "peer speaking") }
+            else if s.hasPrefix("idle") { finish(false, "peer quiet") }
+            else { finish(false, "peer unreachable\(error.map { ", \($0)" } ?? ""), speaking anyway") }
         }
         conn.start(queue: .main)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { finish(false) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            finish(false, "peer did not answer in time, speaking anyway")
+        }
     }
 }
 
@@ -1443,21 +1573,10 @@ struct Scrubber: View {
         GeometryReader { geo in
             let w = geo.size.width
             let big = dragging || hovering
-            MeterReader { m in   // inside the GeometryReader: see ProgressLineNote
-                let frac = deck.duration > 0 ? min(1, max(0, m.progress / deck.duration)) : 0
-                ZStack(alignment: .leading) {
-                    Capsule().fill(theme.track).frame(height: 4)
-                    Capsule()
-                        .fill(LinearGradient(colors: [Theme.accent, Theme.accentDeep],
-                                             startPoint: .leading, endPoint: .trailing))
-                        .frame(width: max(4, w * frac), height: 4)
-                    Circle()
-                        .fill(Theme.accent)
-                        .frame(width: big ? 13 : 9, height: big ? 13 : 9)
-                        .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-                        .offset(x: w * frac - (big ? 6.5 : 4.5))
-                }
-            }
+            // layers moved by the meter, not SwiftUI: see ProgressLineNote
+            ProgressLine(style: .init(track: NSColor(theme.track).cgColor, lineHeight: 4,
+                                      thumb: big ? 13 : 9, thumbVisible: true,
+                                      minFill: 4, glow: false, clampThumb: false))
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
             .gesture(
@@ -3076,33 +3195,19 @@ struct MiniDeckView: View {
     //     every frame stutters the audio. During the drag we push deck.progress
     //     (with deck.scrubbing suppressing the meter's writeback) so the line
     //     tracks the pointer, then commit once on release.
-    //   • the meter is read INSIDE the GeometryReader (see ProgressLineNote)
+    //   • the line itself is ProgressLineView, moved by the meter (ProgressLineNote)
     private func miniProgress(_ theme: Theme) -> some View {
         let live = scrubHover || scrubbing
         let lineH: CGFloat = live ? 4 : 3
         let thumb: CGFloat = scrubbing ? 11 : 8
         return GeometryReader { geo in
             let w = max(geo.size.width, 1)
-            MeterReader { m in
-                // during a drag deck.progress is the pointer (scrubbing stops the
-                // meter writing it back), so one source draws both cases
-                let frac = deck.duration > 0 ? min(1, max(0, m.progress / deck.duration)) : 0
-                ZStack(alignment: .leading) {
-                    Capsule().fill(theme.track).frame(height: lineH)
-                    Capsule()
-                        .fill(LinearGradient(colors: [Theme.accent, Theme.accentDeep],
-                                             startPoint: .leading, endPoint: .trailing))
-                        .frame(width: max(0, w * CGFloat(frac)), height: lineH)
-                        .shadow(color: Theme.accent.opacity(0.8), radius: 3)
-                        .shadow(color: Theme.accent.opacity(0.5), radius: 6)
-                    Circle()
-                        .fill(Theme.accent)
-                        .frame(width: thumb, height: thumb)
-                        .shadow(color: .black.opacity(0.28), radius: 2, y: 1)
-                        .offset(x: min(max(0, w * CGFloat(frac) - thumb / 2), w - thumb))
-                        .opacity(live ? 1 : 0)
-                }
-            }
+            // layers moved by the meter, not SwiftUI: see ProgressLineNote.
+            // During a drag deck.progress is the pointer (scrubbing stops the
+            // meter writing it back), so one source draws both cases.
+            ProgressLine(style: .init(track: NSColor(theme.track).cgColor, lineHeight: lineH,
+                                      thumb: thumb, thumbVisible: live,
+                                      minFill: 0, glow: true, clampThumb: true))
             .frame(maxHeight: .infinity)          // 3–4pt line, 14pt grab area
             .contentShape(Rectangle())
             .gesture(
@@ -3523,10 +3628,13 @@ final class MiniHUDController {
 // which a stranger's install should opt into (Settings ▸ Claude).
 //
 // Its signal is its own. An outage or a new Claude Code release lights a dot
-// on the menu-bar mark and a glow around the chin, separate from the reply
-// count. Hovering the chin counts as seeing it: the glow stops and the dot
-// stops blinking, but holds steady while the problem lasts. High usage only
-// colours its dial; there is nothing to do about it, so it never flashes.
+// on the menu-bar mark, separate from the reply count. Hovering the chin or
+// the mini player's strip counts as seeing it: the dot stops blinking, but
+// holds steady while the problem lasts. High usage only colours its dial;
+// there is nothing to do about it, so it never flashes. Until 1.2.24 a
+// pulsing box also framed the chin and the strip; Adam found it ugly and
+// unexplained (2026-10-07), and the NEW badge and the coloured status dots
+// already say what changed, so the box is gone.
 
 final class ClaudeWatch: ObservableObject {
     static let shared = ClaudeWatch()
@@ -4020,7 +4128,6 @@ struct ClaudeChin: View {
     @Environment(\.colorScheme) private var scheme
     @State private var open = false
     @State private var rolled = false
-    @State private var glow = false
 
     var body: some View {
         let pal = ChinPalette.of(scheme)
@@ -4074,18 +4181,6 @@ struct ClaudeChin: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(theme.card)
         .overlay(alignment: .top) { Rectangle().fill(theme.cardStroke).frame(height: 1) }
-        .overlay {
-            // the chin's own "look at me", separate from the player's rainbow
-            if watch.attention {
-                Rectangle()
-                    .strokeBorder(Theme.accent.opacity(glow ? 0.85 : 0.1), lineWidth: 1.5)
-                    .allowsHitTesting(false)
-                    .onAppear {
-                        withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { glow = true }
-                    }
-                    .onDisappear { glow = false }
-            }
-        }
         .onHover { if $0 { watch.acknowledge() } }
         .onAppear {
             rolled = false
@@ -4247,13 +4342,12 @@ struct ClaudeChin: View {
 // The same three things on one line along the bottom of the mini player
 // (Adam, 2026-09-24: "on the bottom of the floating window as well"). No
 // drop-down here, the panel stays small: a click opens the full deck, whose
-// chin has the details. It glows and acknowledges exactly like the chin.
+// chin has the details. A hover acknowledges, exactly like the chin.
 struct ClaudeStrip: View {
     @ObservedObject private var watch = ClaudeWatch.shared
     let theme: Theme
     let glass: Bool
     @Environment(\.colorScheme) private var scheme
-    @State private var glow = false
 
     var body: some View {
         let pal = ChinPalette.of(scheme)
@@ -4303,18 +4397,6 @@ struct ClaudeStrip: View {
         }
         .frame(height: 36)
         .padding(.horizontal, 2)
-        .overlay {
-            if watch.attention {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Theme.accent.opacity(glow ? 0.85 : 0.1), lineWidth: 1.5)
-                    .padding(-3)
-                    .allowsHitTesting(false)
-                    .onAppear {
-                        withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { glow = true }
-                    }
-                    .onDisappear { glow = false }
-            }
-        }
         .contentShape(Rectangle())
         .onHover { if $0 { watch.acknowledge() } }
         .onTapGesture {
