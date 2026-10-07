@@ -2,13 +2,35 @@
 
 Install instructions are in [INSTALL.md](INSTALL.md), and [speakyspeak.com/howto](https://speakyspeak.com/howto) is the five-minute visual tour with real screenshots. This is the full reference for after it's running: how to set up Claude Code so listening actually works, and what every setting does.
 
+- [How SpeakySpeak works](#how-speakyspeak-works)
 - [Set this up first](#set-this-up-first)
 - [Timestamps in your replies](#timestamps-in-your-replies)
 - [A suggested way to work](#a-suggested-way-to-work)
 - [Every setting, explained](#every-setting-explained)
 - [The sort menu](#the-sort-menu)
 - [Plain text knobs](#plain-text-knobs)
+- [Changing it yourself](#changing-it-yourself)
 - [When something seems wrong](#when-something-seems-wrong)
+- [Feedback: how to reach me and what happens next](#feedback-how-to-reach-me-and-what-happens-next)
+
+## How SpeakySpeak works
+
+The whole trip, from Claude finishing a reply to you hearing it:
+
+1. **Claude Code finishes a reply.** Claude Code runs a small script at that moment, a Stop hook that install.sh put in `~/.claude/hooks/speak-reply.sh`. In the "as it works" read modes it also runs after each tool call, so long runs are read as they happen. When Claude is waiting on you (a permission question, say), it plays a chime and queues "Waiting on you in" plus the session name.
+2. **The hook picks the words.** It reads the session's transcript and takes everything Claude wrote since your last message, so a reply split around a tool call is read in one piece and nothing is read twice.
+3. **It cleans them up for listening.** Code blocks are dropped. Links read as their text, bare web addresses as "link", file paths as just the file name, slash commands as words ("code review"), arrows as "to", and emoji and markdown symbols disappear. The reply opens with the time it finished, and with the session name too if you turn that on.
+4. **Your Mac turns it into audio.** With the Kokoro neural voice installed, a small always-on helper renders it in about half a second; otherwise the macOS voice reads it. The audio is evened out to normal speech loudness. Rendering happens on your Mac: the text of your replies never leaves it.
+5. **It joins the queue.** Each reply becomes an audio file plus a note with its session, time and text in `/tmp/claude-speech/queue/`.
+6. **The deck plays them, one at a time.** The menu-bar icon shows how many are waiting. Click it for the full deck: the reply playing now, the list of what's next, and controls. The mini player appears while a reply plays (or always, if you set it). Nothing ever talks over anything else, and ⌃⌥⌘Space silences the current reply from any app.
+
+A few things sit around that loop:
+
+- **The Claude strip** (optional, Settings ▸ Claude). Along the bottom of the deck and the mini player: three dials for your plan usage, three dots for status.claude.com, and your Claude Code version. It asks Anthropic for your usage with your own Claude Code sign-in, every 5 minutes. A blue NEW badge means Claude Code just updated itself, or a newer one is out than the one you have; a blue dot on the menu-bar icon means the same, a red one means a Claude service has trouble. The circular arrow checks everything again right away, reading the newest Claude Code version straight from GitHub.
+- **Updates.** Once a day SpeakySpeak checks whether a new version is out. When one is, an ↑ appears next to the menu-bar icon and Settings ▸ About has an Update button. It pulls the new version into the folder you installed from, rebuilds and relaunches in about a minute, and keeps any changes you made yourself (see [Changing it yourself](#changing-it-yourself)).
+- **Two Macs, one pair of AirPods.** Put the other Mac's Tailscale address in `~/.claude/speak-peer` on each. Before one starts a reply by itself, it asks the other whether it is speaking and waits its turn.
+
+What leaves your Mac: the daily update check, and, only if you turn on the Claude strip, the usage, status and Claude Code version checks. The app sends nothing about you or your replies anywhere.
 
 ## Set this up first
 
@@ -88,6 +110,25 @@ Speed, volume and mute live on the full deck itself, not in Settings: the speake
 | **Accent colour** | The orange used throughout the app. Most of the slider sweeps through colours at a fixed saturation and brightness, so any choice keeps the same muted feel; the last stretch leaves colour behind and runs white to grey to black. Reset returns the original terracotta. |
 | **Show mini player** | **Only while speaking** appears with a reply and fades after. **Always visible** keeps a small controller on screen. Either way you can drag it anywhere and it stays there. |
 
+### Claude
+
+| Setting | What it does |
+| --- | --- |
+| **Show Claude usage, status and version in the deck** | Off by default. Turns on the Claude strip: usage dials, status dots and your Claude Code version along the bottom of the deck and the mini player. It uses your Claude Code sign-in to ask Anthropic for your usage. See [How SpeakySpeak works](#how-speakyspeak-works). |
+
+### About
+
+| Row | What it does |
+| --- | --- |
+| **Check for updates** | Checks for a new version now (it also checks by itself once a day). When one is out, the row becomes an Update button. |
+| **How it works** | Opens this guide inside the app. |
+| **How to use it** | Opens the five-minute visual tour on speakyspeak.com. |
+| **What's new** | Opens the release notes. |
+
+### Report an issue
+
+Two buttons: **Email draft** opens an email to hi@speakyspeak.com with your version, engine and recent log lines filled in, and **Claude draft** copies a prompt that has your own Claude Code gather the logs and write the report. More in [Feedback](#feedback-how-to-reach-me-and-what-happens-next).
+
 ### Controls on the full deck
 
 The row above the queue, on the "Up next" line. Hovering any of them replaces the label with what it does.
@@ -141,6 +182,7 @@ The Settings window writes plain files in `~/.claude/`, so shell edits and the G
 | `speak-voice` | macOS voice name. Absent probes for the best installed one. |
 | `speak-rate` | Words per minute for macOS voices. |
 | `speak-peer` | The other Mac's Tailscale IP, so the two Macs take turns on one pair of AirPods. |
+| `speak-prompt-chime` | Path to a sound file played when Claude is waiting on you. Absent means the macOS Hero sound. |
 | `speak-lead-in` | Seconds of silence before speech when the app has been quiet a while, so shared AirPods finish switching to this Mac before the first word. Default 1.2. Set `0` to turn it off. |
 
 ## Changing it yourself
@@ -163,3 +205,21 @@ Logs live in `/tmp/claude-speech/`: `hook.log` for rendering, `deck.log` for the
 - **The voice sounds wrong or slow.** The neural voice may have fallen back to macOS voices. `hook.log` records which engine each reply used.
 
 Still stuck, or something's just annoying? Email [hi@speakyspeak.com](mailto:hi@speakyspeak.com). Settings ▸ Report an issue has two buttons ("Email draft" and "Claude draft") that write the report for you, including one that hands your own Claude Code the job of gathering the logs.
+
+## Feedback: how to reach me and what happens next
+
+I'm Adam, and I made SpeakySpeak. Bugs, ideas, questions, things that just bug you: I want all of it.
+
+**Three ways to reach me:**
+
+- **Email** [hi@speakyspeak.com](mailto:hi@speakyspeak.com). Any address at speakyspeak.com reaches me too.
+- **From the app:** Settings ▸ Report an issue. **Email draft** fills in your version, engine and recent log lines for you; **Claude draft** has your own Claude Code gather the logs and write it.
+- **On GitHub:** open an issue at [github.com/radam5000/speakyspeak](https://github.com/radam5000/speakyspeak/issues) if you'd rather it be public.
+
+**What happens next:**
+
+1. Within a couple of minutes you get an automatic "got it" email, so you know it arrived.
+2. I read every message myself and write back personally.
+3. When your fix or idea ships, you hear from me again. If you helped, I'd like to thank you by name in the credits; say so if you'd rather I didn't.
+
+**Your privacy:** your email address stays in my mailbox and is never published. Your name appears only in the credits, and not if you tell me no. When a report becomes a public GitHub issue, it's a paraphrase of the technical part only. The app itself sends nothing; there is no telemetry.

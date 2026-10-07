@@ -45,6 +45,9 @@ cp Icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp Icon/SyGlyph.png "$APP/Contents/Resources/SyGlyph.png"
 # the Updater compares this against the public repo's VERSION on main
 cp VERSION "$APP/Contents/Resources/VERSION"
+# Settings ▸ About ▸ How it works reads this copy, so the guide in the app is
+# always the guide of this version (verify.sh checks they match)
+cp GUIDE.md "$APP/Contents/Resources/GUIDE.md"
 
 # Deployment target must be set explicitly. Without -target, swiftc stamps the
 # BUILD machine's OS as the minimum, so a Mac on macOS 26 produced a binary that

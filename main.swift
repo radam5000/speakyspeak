@@ -177,6 +177,14 @@ final class PlayMeter: ObservableObject {
 
 // The only views that re-render on every meter tick: wrap the few pixels that
 // draw progress or loudness, so the view around them stays still.
+//
+// ProgressLineNote (2026-10-07): put the MeterReader INSIDE any GeometryReader,
+// never around one, and draw from the `m` it hands you. Wrapped the other way
+// round, MeterReader's body re-ran 30 times a second but SwiftUI did not re-run
+// the GeometryReader's closure (it read the meter through Deck, which SwiftUI
+// cannot see), so both progress lines froze until a hover redrew the panel.
+// Measured with a probe build: 30 ticks and 60 reader bodies a second, 0 to 1
+// GeometryReader passes, and the line's pixels unchanged for 12 s.
 struct MeterReader<Content: View>: View {
     @ObservedObject private var meter = PlayMeter.shared
     @ViewBuilder var content: (PlayMeter) -> Content
@@ -1427,7 +1435,6 @@ extension View {
 
 struct Scrubber: View {
     @ObservedObject var deck = Deck.shared
-    @ObservedObject private var meter = PlayMeter.shared   // redraws per tick; see Deck.progress
     let theme: Theme
     @State private var dragging = false
     @State private var hovering = false
@@ -1435,18 +1442,21 @@ struct Scrubber: View {
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
-            let frac = deck.duration > 0 ? min(1, max(0, deck.progress / deck.duration)) : 0
-            ZStack(alignment: .leading) {
-                Capsule().fill(theme.track).frame(height: 4)
-                Capsule()
-                    .fill(LinearGradient(colors: [Theme.accent, Theme.accentDeep],
-                                         startPoint: .leading, endPoint: .trailing))
-                    .frame(width: max(4, w * frac), height: 4)
-                Circle()
-                    .fill(Theme.accent)
-                    .frame(width: dragging || hovering ? 13 : 9, height: dragging || hovering ? 13 : 9)
-                    .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-                    .offset(x: w * frac - (dragging || hovering ? 6.5 : 4.5))
+            let big = dragging || hovering
+            MeterReader { m in   // inside the GeometryReader: see ProgressLineNote
+                let frac = deck.duration > 0 ? min(1, max(0, m.progress / deck.duration)) : 0
+                ZStack(alignment: .leading) {
+                    Capsule().fill(theme.track).frame(height: 4)
+                    Capsule()
+                        .fill(LinearGradient(colors: [Theme.accent, Theme.accentDeep],
+                                             startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(4, w * frac), height: 4)
+                    Circle()
+                        .fill(Theme.accent)
+                        .frame(width: big ? 13 : 9, height: big ? 13 : 9)
+                        .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                        .offset(x: w * frac - (big ? 6.5 : 4.5))
+                }
             }
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
@@ -2924,7 +2934,6 @@ struct MiniDeckView: View {
     @State private var shimmerStart: Date?   // set when a new reply starts → glow pulse
     @State private var scrubHover = false     // pointer over the progress line
     @State private var scrubbing = false      // drag in progress
-    @State private var scrubFrac: Double = 0  // local 0…1 during a drag, for instant feedback
 
     var body: some View {
         let theme = Theme.of(scheme)
@@ -3067,28 +3076,32 @@ struct MiniDeckView: View {
     //     every frame stutters the audio. During the drag we push deck.progress
     //     (with deck.scrubbing suppressing the meter's writeback) so the line
     //     tracks the pointer, then commit once on release.
+    //   • the meter is read INSIDE the GeometryReader (see ProgressLineNote)
     private func miniProgress(_ theme: Theme) -> some View {
         let live = scrubHover || scrubbing
-        return MeterReader { _ in GeometryReader { geo in
+        let lineH: CGFloat = live ? 4 : 3
+        let thumb: CGFloat = scrubbing ? 11 : 8
+        return GeometryReader { geo in
             let w = max(geo.size.width, 1)
-            let base = deck.duration > 0 ? min(1, max(0, deck.progress / deck.duration)) : 0
-            let frac = scrubbing ? scrubFrac : base
-            let lineH: CGFloat = live ? 4 : 3
-            let thumb: CGFloat = scrubbing ? 11 : 8
-            ZStack(alignment: .leading) {
-                Capsule().fill(theme.track).frame(height: lineH)
-                Capsule()
-                    .fill(LinearGradient(colors: [Theme.accent, Theme.accentDeep],
-                                         startPoint: .leading, endPoint: .trailing))
-                    .frame(width: max(0, w * CGFloat(frac)), height: lineH)
-                    .shadow(color: Theme.accent.opacity(0.8), radius: 3)
-                    .shadow(color: Theme.accent.opacity(0.5), radius: 6)
-                Circle()
-                    .fill(Theme.accent)
-                    .frame(width: thumb, height: thumb)
-                    .shadow(color: .black.opacity(0.28), radius: 2, y: 1)
-                    .offset(x: min(max(0, w * CGFloat(frac) - thumb / 2), w - thumb))
-                    .opacity(live ? 1 : 0)
+            MeterReader { m in
+                // during a drag deck.progress is the pointer (scrubbing stops the
+                // meter writing it back), so one source draws both cases
+                let frac = deck.duration > 0 ? min(1, max(0, m.progress / deck.duration)) : 0
+                ZStack(alignment: .leading) {
+                    Capsule().fill(theme.track).frame(height: lineH)
+                    Capsule()
+                        .fill(LinearGradient(colors: [Theme.accent, Theme.accentDeep],
+                                             startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(0, w * CGFloat(frac)), height: lineH)
+                        .shadow(color: Theme.accent.opacity(0.8), radius: 3)
+                        .shadow(color: Theme.accent.opacity(0.5), radius: 6)
+                    Circle()
+                        .fill(Theme.accent)
+                        .frame(width: thumb, height: thumb)
+                        .shadow(color: .black.opacity(0.28), radius: 2, y: 1)
+                        .offset(x: min(max(0, w * CGFloat(frac) - thumb / 2), w - thumb))
+                        .opacity(live ? 1 : 0)
+                }
             }
             .frame(maxHeight: .infinity)          // 3–4pt line, 14pt grab area
             .contentShape(Rectangle())
@@ -3096,8 +3109,7 @@ struct MiniDeckView: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { v in
                         if !scrubbing { scrubbing = true; deck.scrubbing = true }
-                        scrubFrac = Double(min(max(0, v.location.x / w), 1))
-                        deck.progress = scrubFrac * deck.duration
+                        deck.progress = Double(min(max(0, v.location.x / w), 1)) * deck.duration
                     }
                     .onEnded { v in
                         let f = Double(min(max(0, v.location.x / w), 1))
@@ -3106,7 +3118,7 @@ struct MiniDeckView: View {
                         scrubbing = false
                     })
             .onHover { scrubHover = $0 }
-        } }
+        }
         .frame(height: 14)
         // the row still DRAWS and HIT-TESTS 14pt tall; negative padding reports
         // 4pt to the VStack so the panel's fittingSize (and the ~84pt card)
@@ -5034,6 +5046,13 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                // the whole loop explained, from the copy of GUIDE.md this
+                // build carries (Adam, 2026-10-04)
+                LabeledContent {
+                    Button("Open the guide") { GuideWindowController.open() }
+                } label: {
+                    Text("How it works")
+                }
                 LabeledContent {
                     Button("Open the tour") {
                         NSWorkspace.shared.open(URL(string: "https://speakyspeak.com/howto")!)
@@ -5172,6 +5191,324 @@ struct SettingsView: View {
         .buttonStyle(.borderless)
         .help("Preview this voice. Switch voices while it plays to hop between them")
         .accessibilityLabel(previewer.state == .idle ? "Preview voice" : "Stop preview")
+    }
+}
+
+// MARK: - Guide (GUIDE.md, read inside the app)
+//
+// Settings ▸ About ▸ "How it works" opens GUIDE.md in a window of its own.
+// build.sh copies the repo's GUIDE.md into Resources, so the guide a user reads
+// is always the guide of the version they are running, and verify.sh fails a
+// release whose guide misses a Settings control or a ~/.claude knob (Adam,
+// 2026-10-04: "always make sure it's up to date"). A deliberately small
+// markdown reader: the block shapes GUIDE.md uses (headings, paragraphs, lists,
+// code, tables), with inline styling by AttributedString. Anything it does not
+// recognise reads as a paragraph, so a new shape degrades instead of vanishing.
+
+enum GuideBlock {
+    case heading(level: Int, text: String, anchor: String)
+    case paragraph(String)
+    case list([GuideListItem])
+    case code(String)
+    case table([[String]])
+}
+
+struct GuideListItem {
+    let indent: Int        // nesting depth, two spaces a level
+    let marker: String     // "•" or "1."
+    var text: String
+}
+
+enum GuideDoc {
+    static let webURL = URL(string: Updater.repoPage + "/blob/main/GUIDE.md")!
+
+    static func bundled() -> String? {
+        guard let u = Bundle.main.url(forResource: "GUIDE", withExtension: "md") else { return nil }
+        return try? String(contentsOf: u, encoding: .utf8)
+    }
+
+    /// GitHub's heading anchors, so the guide's own [x](#anchor) links land:
+    /// lowercase, punctuation dropped, spaces to hyphens.
+    static func anchor(_ s: String) -> String {
+        let kept = s.lowercased().unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0) || $0 == " " || $0 == "-" || $0 == "_"
+        }
+        return String(String.UnicodeScalarView(kept)).replacingOccurrences(of: " ", with: "-")
+    }
+
+    static func parse(_ md: String) -> [GuideBlock] {
+        var out: [GuideBlock] = []
+        var para: [String] = []
+        var items: [GuideListItem] = []
+        func flushPara() {
+            if !para.isEmpty { out.append(.paragraph(para.joined(separator: " "))); para = [] }
+        }
+        func flushList() {
+            if !items.isEmpty { out.append(.list(items)); items = [] }
+        }
+        let lines = md.components(separatedBy: "\n")
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("```") {
+                flushPara(); flushList()
+                var code: [String] = []
+                i += 1
+                while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                    code.append(lines[i]); i += 1
+                }
+                out.append(.code(code.joined(separator: "\n")))
+                i += 1
+                continue
+            }
+            if let r = t.range(of: #"^#{1,4} "#, options: .regularExpression) {
+                flushPara(); flushList()
+                let level = t[r].filter { $0 == "#" }.count
+                let text = String(t[r.upperBound...])
+                out.append(.heading(level: level, text: text, anchor: anchor(text)))
+                i += 1
+                continue
+            }
+            if t.hasPrefix("|") {
+                flushPara(); flushList()
+                var rows: [[String]] = []
+                while i < lines.count, lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("|") {
+                    let row = lines[i].trimmingCharacters(in: .whitespaces)
+                    // the |---|---| rule under the header carries no words
+                    if row.range(of: #"^\|[\s:|-]+\|$"#, options: .regularExpression) == nil {
+                        var cells = row.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+                        cells.removeFirst()
+                        if cells.last == "" { cells.removeLast() }
+                        rows.append(cells)
+                    }
+                    i += 1
+                }
+                out.append(.table(rows))
+                continue
+            }
+            if let r = line.range(of: #"^\s*([-*]|\d+\.)\s+"#, options: .regularExpression) {
+                flushPara()
+                let head = line[r]
+                let spaces = head.prefix { $0 == " " }.count
+                let mark = head.trimmingCharacters(in: .whitespaces)
+                items.append(GuideListItem(indent: spaces / 2, marker: mark == "-" || mark == "*" ? "•" : mark,
+                                           text: String(line[r.upperBound...])))
+                i += 1
+                continue
+            }
+            if t.isEmpty {
+                flushPara(); flushList()
+            } else if !items.isEmpty, line.hasPrefix("  ") {
+                items[items.count - 1].text += " " + t     // a wrapped list item
+            } else {
+                flushList()
+                para.append(t)
+            }
+            i += 1
+        }
+        flushPara(); flushList()
+        return out
+    }
+}
+
+struct GuideView: View {
+    @Environment(\.colorScheme) private var scheme
+    private var theme: Theme { Theme.of(scheme) }
+    private let blocks: [GuideBlock]
+    private let sections: [(text: String, anchor: String)]
+
+    init(markdown: String) {
+        // the file's own table of contents repeats the sidebar; drop it here
+        blocks = GuideDoc.parse(markdown).filter {
+            if case let .list(items) = $0 {
+                return !items.allSatisfy { $0.text.range(of: #"^\[[^\]]+\]\(#[^)]+\)$"#, options: .regularExpression) != nil }
+            }
+            return true
+        }
+        sections = blocks.compactMap {
+            if case let .heading(level, text, anchor) = $0, level == 2 { return (text, anchor) }
+            return nil
+        }
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            HStack(spacing: 0) {
+                contents(proxy)
+                Rectangle().fill(theme.cardStroke).frame(width: 1)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(Array(blocks.enumerated()), id: \.offset) { _, b in
+                            block(b)
+                        }
+                    }
+                    .frame(maxWidth: 640, alignment: .leading)
+                    .padding(.horizontal, 32).padding(.vertical, 28)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                }
+                .background(theme.bg)
+            }
+            // [x](#anchor) scrolls here; another file in the repo opens on
+            // GitHub; anything else goes to the browser or mail app
+            .environment(\.openURL, OpenURLAction { url in
+                let s = url.absoluteString
+                if s.hasPrefix("#") {
+                    withAnimation { proxy.scrollTo(String(s.dropFirst()), anchor: .top) }
+                    return .handled
+                }
+                if url.scheme == nil, s.hasSuffix(".md") {
+                    NSWorkspace.shared.open(URL(string: Updater.repoPage + "/blob/main/" + s)!)
+                    return .handled
+                }
+                return .systemAction
+            })
+            .onAppear {
+                // screenshot staging: SPEAKYSPEAK_DEMO_ANCHOR opens the guide at a section
+                if demoScene != nil, let a = ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_ANCHOR"] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { proxy.scrollTo(a, anchor: .top) }
+                }
+            }
+        }
+        .tint(Theme.accent)
+        .frame(minWidth: 680, idealWidth: 860, minHeight: 480, idealHeight: 700)
+    }
+
+    private func contents(_ proxy: ScrollViewProxy) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("CONTENTS")
+                    .font(.system(size: 9, weight: .bold)).kerning(0.8)
+                    .foregroundStyle(theme.secondary)
+                    .padding(.horizontal, 8).padding(.bottom, 6)
+                // ids by position: an anchor here would be found by scrollTo
+                // before the heading it names, and scroll this list instead
+                ForEach(Array(sections.enumerated()), id: \.offset) { _, s in
+                    Button {
+                        withAnimation { proxy.scrollTo(s.anchor, anchor: .top) }
+                    } label: {
+                        Text(s.text)
+                            .font(.system(size: 12))
+                            .foregroundStyle(theme.text)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.vertical, 24).padding(.horizontal, 10)
+        }
+        .frame(width: 210)
+        .background(theme.card)
+    }
+
+    private func inline(_ s: String) -> Text {
+        let opts = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        if let a = try? AttributedString(markdown: s, options: opts) { return Text(a) }
+        return Text(s)
+    }
+
+    @ViewBuilder private func block(_ b: GuideBlock) -> some View {
+        switch b {
+        case let .heading(level, text, anchor):
+            inline(text)
+                .font(level == 1 ? .system(size: 26, weight: .bold, design: .serif)
+                      : level == 2 ? .system(size: 19, weight: .semibold, design: .serif)
+                      : .system(size: 14, weight: .semibold))
+                .foregroundStyle(theme.text)
+                .padding(.top, level == 1 ? 0 : level == 2 ? 18 : 8)
+                .id(anchor)
+        case let .paragraph(s):
+            inline(s)
+                .font(.system(size: 13)).lineSpacing(3)
+                .foregroundStyle(theme.text)
+                .fixedSize(horizontal: false, vertical: true)
+        case let .list(items):
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, it in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(it.marker)
+                            .font(.system(size: 13).monospacedDigit())
+                            .foregroundStyle(theme.secondary)
+                            .frame(minWidth: 14, alignment: .trailing)
+                        inline(it.text)
+                            .font(.system(size: 13)).lineSpacing(3)
+                            .foregroundStyle(theme.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.leading, CGFloat(it.indent) * 18)
+                }
+            }
+        case let .code(s):
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(s)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(theme.text)
+                    .padding(12)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(theme.card))
+        case let .table(rows):
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { n, cells in
+                    HStack(alignment: .top, spacing: 14) {
+                        ForEach(Array(cells.enumerated()), id: \.offset) { c, cell in
+                            Group {
+                                if n == 0 {
+                                    Text(cell.uppercased())
+                                        .font(.system(size: 9, weight: .bold)).kerning(0.8)
+                                        .foregroundStyle(theme.secondary)
+                                } else {
+                                    inline(cell)
+                                        .font(.system(size: 12.5)).lineSpacing(2)
+                                        .foregroundStyle(theme.text)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .frame(width: c == 0 && cells.count > 1 ? 180 : nil, alignment: .leading)
+                            .frame(maxWidth: c == 0 && cells.count > 1 ? nil : .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(.vertical, 7)
+                    if n < rows.count - 1 {
+                        Rectangle().fill(theme.cardStroke).frame(height: 1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+final class GuideWindowController: NSWindowController {
+    static let shared = GuideWindowController()
+
+    private init() {
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 700),
+                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                           backing: .buffered, defer: false)
+        win.title = "SpeakySpeak Guide"
+        win.isReleasedWhenClosed = false
+        win.contentViewController = NSHostingController(rootView: GuideView(markdown: GuideDoc.bundled() ?? ""))
+        win.setContentSize(NSSize(width: 860, height: 700))
+        super.init(window: win)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// The guide inside the app; a bundle without GUIDE.md (a build that
+    /// predates it) opens the copy on GitHub instead.
+    static func open() {
+        guard GuideDoc.bundled() != nil else { NSWorkspace.shared.open(GuideDoc.webURL); return }
+        let c = shared
+        if !(c.window?.isVisible ?? false) { c.window?.center() }
+        if demoScene != nil, ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_DARK"] == "1" {
+            c.window?.appearance = NSAppearance(named: .darkAqua)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        c.showWindow(nil)
+        c.window?.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -5456,6 +5793,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 SettingsWindowController.shared.show()
             }
+        }
+        if demoScene == "guide" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { GuideWindowController.open() }
         }
     }
 

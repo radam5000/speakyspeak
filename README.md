@@ -14,11 +14,11 @@ It is a playback layer, not a voice mode: it never touches your input, so you ke
 
 **[speakyspeak.com/howto](https://speakyspeak.com/howto)** is the five-minute visual tour: real screenshots of every part of the app, what each control does, and a good way to set it all up. Start there.
 
-[GUIDE.md](GUIDE.md) is the full reference behind it: the suggested multi-session setup, and every setting explained in one place.
+[GUIDE.md](GUIDE.md) is the full reference behind it: how a reply gets from Claude to your ears, the suggested multi-session setup, and every setting explained in one place. The same guide is inside the app: **Settings ▸ About ▸ How it works**.
 
 ## Feedback
 
-Found a bug or want something changed? Email **[hi@speakyspeak.com](mailto:hi@speakyspeak.com)** and a human reads it and replies. Prefer public tracking? Open a [GitHub Issue](https://github.com/radam5000/speakyspeak/issues). Fastest of all: open **Settings ▸ Report an issue** (right-click the menu-bar icon → Settings…) and use **Email draft**, which pre-fills an email with your version, engine, and recent log lines so the report arrives debuggable. **Claude draft** does the same job the other way: it copies a prompt you paste into Claude Code, which reads the logs, writes the report, and opens the draft for you to send.
+Found a bug or want something changed? Email **[hi@speakyspeak.com](mailto:hi@speakyspeak.com)** and a human reads it and replies. Prefer public tracking? Open a [GitHub Issue](https://github.com/radam5000/speakyspeak/issues). Fastest of all: open **Settings ▸ Report an issue** (right-click the menu-bar icon → Settings…) and use **Email draft**, which pre-fills an email with your version, engine, and recent log lines so the report arrives debuggable. **Claude draft** does the same job the other way: it copies a prompt you paste into Claude Code, which reads the logs, writes the report, and opens the draft for you to send. The guide's last section says what happens to your message: an automatic receipt, a personal reply, and word when it ships.
 
 ## Claude installs it – that's the point
 

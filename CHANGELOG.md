@@ -2,6 +2,12 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.23 (2026-10-07)
+
+**The progress line keeps moving.** The line under the mini player (and the one in the deck) could sit still while a reply was being read, and only caught up when you moved the pointer over it. It now moves smoothly the whole time. Seen on two Macs; the cause was in how the line was redrawn, not in playback.
+
+**A guide inside the app.** Settings ▸ About ▸ How it works opens a guide to every setting and to what happens between Claude finishing a reply and you hearing it: what is spoken, which voice, the queue, the Claude strip, updates, the two-Mac handoff, and what goes over the network. It ships with the app, so it matches your version.
+
 ## 1.2.22 (2026-10-02)
 
 **Claude Code updates show up again.** Claude Code updates itself within a minute of a release, so the old "a new version is out" badge almost never showed. Now, when Claude Code updates itself, the version in the Claude section gets a blue NEW badge until you next open and close the deck, and the details say "just arrived" next to a What's new link. If your Claude Code doesn't update itself, you still see "is out" as before.

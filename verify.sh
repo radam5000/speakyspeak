@@ -43,6 +43,8 @@ bash tests/run-update-tests.sh
 res $? "tests/run-update-tests.sh (updates keep the user's own changes)"
 bash -n scripts/update.sh && bash -n scripts/keep-edited-hooks.sh
 res $? "bash -n update.sh + keep-edited-hooks.sh"
+bash tests/guide-gate-test.sh
+res $? "tests/guide-gate-test.sh (the guide gate catches a planted gap)"
 
 step "4. INSTALL.md JSON blocks parse"
 JB=0; JBAD=0
@@ -129,6 +131,18 @@ RETIRED
 for must in "showMessageTimestamps" "speak-when" "Group by" "hi@speakyspeak.com"; do
   grep -q -- "$must" GUIDE.md || { echo "  GUIDE.md no longer mentions $must"; DFAIL=$((DFAIL+1)); }
 done
+
+# The guide keeps up with the app (Adam, 2026-10-04: "always make sure it's up
+# to date"). Every control the Settings window shows and every ~/.claude knob
+# the hook or the app reads must be named in GUIDE.md, and the copy the app
+# shows (Settings ▸ About ▸ How it works) must be this exact file. A new
+# setting with no guide entry fails the release here, not in a user's hands.
+GUIDE_MISSING=$(python3 tests/guide-coverage.py)
+if [ -n "$GUIDE_MISSING" ]; then
+  while IFS= read -r m; do echo "  GUIDE.md does not explain the $m"; DFAIL=$((DFAIL+1)); done <<< "$GUIDE_MISSING"
+fi
+cmp -s GUIDE.md SpeakySpeak.app/Contents/Resources/GUIDE.md \
+  || { echo "  the built app's GUIDE.md is not this GUIDE.md (build.sh copies it into Resources)"; DFAIL=$((DFAIL+1)); }
 
 echo "docs checked: $(echo $DOCS | wc -w | tr -d ' ') file(s), $DFAIL problem(s)"
 [ "$DFAIL" -eq 0 ]; res $? "docs in sync"
