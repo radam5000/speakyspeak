@@ -254,7 +254,7 @@ SpeakySpeak works with any terminal and you have not touched the user's. Adam, w
 > SpeakySpeak is installed and working. One optional thing: keep your terminal exactly as it is, or set up iTerm2 the way Adam uses it, one coloured window per project? Keeping it as is is fine.
 
 - **Keep:** say nothing more about it. Done.
-- **Set it up:** follow "A window per project, each its own colour" in [GUIDE.md](GUIDE.md): the four `defaults write` lines with iTerm2 quit (skip the optional fourth unless they want the + button gone), then tell them how to colour a window: right-click its title bar, pick a colour dot. If iTerm2 is not installed, `brew install --cask iterm2` first, and only with their yes.
+- **Set it up:** follow "A window per project, each its own colour" in [GUIDE.md](GUIDE.md): the four `defaults write` lines with iTerm2 quit (skip the optional fourth unless they want the + button gone), then tell them how to colour a window: right-click its title bar, pick a colour dot. If iTerm2 is not installed, `brew install --cask iterm2` first, and only with their yes. If you are running inside iTerm2 yourself (`$TERM_PROGRAM` is `iTerm.app`), never quit it: that ends this session. Walk the user through the four Settings steps in that section instead; they work with iTerm2 running.
 
 Do not attach other questions to this one. The whole install asks the user two things at most (the language check before step 3, and this).
 

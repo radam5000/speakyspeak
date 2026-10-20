@@ -13,6 +13,8 @@
 #   6. no network                     -> exit 2, nothing touched
 #   7. install.sh keeps a hand-edited ~/.claude/hooks copy aside, and replaces
 #      one that matches any shipped version silently
+#   9. install.sh quits an app whose 1.0.x updater cannot relaunch it, and
+#      leaves every other caller alone
 set -u
 cd "$(dirname "$0")/.."
 REPO="$PWD"
@@ -88,10 +90,12 @@ OUT=$(cd "$C" && env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAM
 
 echo "update 7: install.sh keeps a hand-edited installed hook, replaces a shipped one"
 H="$TDIR/home"; mkdir -p "$H/.claude/hooks"
-# (a) the installed copy is an older shipped version -> replaced, no backup
+# (a) the installed copy is an older shipped version -> replaced, no backup.
+# Under install.sh's pipefail, as in the real install: grep -q quitting early
+# used to SIGPIPE the loop and read a match as no match (F-0008, 10/17).
 git -C "$REPO" log --format=%H -n 40 -- hooks/speak-reply.sh | sed -n 2p | while read -r c; do
   git -C "$REPO" show "$c:hooks/speak-reply.sh" > "$H/.claude/hooks/speak-reply.sh"; done
-(cd "$REPO" && HOME="$H" bash -c 'source scripts/keep-edited-hooks.sh; keep_edited_hooks') > "$TDIR/k1" 2>&1
+(cd "$REPO" && HOME="$H" bash -c 'set -euo pipefail; source scripts/keep-edited-hooks.sh; keep_edited_hooks') > "$TDIR/k1" 2>&1
 ls "$H/.claude/hooks/" | grep -q mine && bad "backed up a shipped version: $(cat "$TDIR/k1")" || ok "shipped version replaced quietly"
 # (b) the installed copy has the user's own edit -> kept aside
 printf '\n# my own tweak\n' >> "$H/.claude/hooks/speak-reply.sh"
@@ -99,5 +103,28 @@ printf '\n# my own tweak\n' >> "$H/.claude/hooks/speak-reply.sh"
 ls "$H/.claude/hooks/"speak-reply.sh.mine-* >/dev/null 2>&1 && grep -q 'my own tweak' "$H/.claude/hooks/"speak-reply.sh.mine-* \
   && ok "hand-edited copy kept as speak-reply.sh.mine-*" || bad "not kept: $(ls "$H/.claude/hooks/") $(cat "$TDIR/k2")"
 grep -q 'speak-reply.sh' "$TDIR/k2" && ok "and says so" || bad "silent: $(cat "$TDIR/k2")"
+
+echo "update 9: install.sh restarts an app that its 1.0.x updater cannot (F-0008)"
+# A tiny program named SpeakySpeak inside a .app stands in for the old app; it
+# starts the updater chain through a shell the way 1.0.0-1.0.9 did, then waits.
+# (A copy of /bin/bash will not do: macOS kills a moved system binary.) The
+# chain's pkill names a process that does not exist, so a real SpeakySpeak on
+# this Mac is never hit.
+APPDIR="$TDIR/SpeakySpeak.app/Contents/MacOS"; mkdir -p "$APPDIR"
+printf '#include <stdlib.h>\n#include <unistd.h>\nint main(int c, char **v) { if (c > 1) system(v[1]); sleep(30); return 0; }\n' > "$TDIR/app.c"
+cc -o "$APPDIR/SpeakySpeak" "$TDIR/app.c"
+printf 'set -euo pipefail\nsource "%s/scripts/rescue-old-updater.sh"\nrescue_old_updater\necho install-done\n' "$REPO" > "$TDIR/inst.sh"
+waitfor() { for _ in $(seq 1 50); do [ -e "$1" ] && return 0; sleep 0.2; done; return 1; }
+# (a) the old chain under the app: the app is quit, the chain reopens it
+"$APPDIR/SpeakySpeak" "bash $TDIR/inst.sh >> $TDIR/a.log 2>&1 && pkill -x SpeakySpeak-test-only; sleep 1; touch $TDIR/a.reopened" & A=$!
+waitfor "$TDIR/a.reopened" && ! kill -0 "$A" 2>/dev/null && grep -q install-done "$TDIR/a.log" \
+  && ok "old updater's app quit, install finished, chain went on to open -g" || bad "app $A alive or chain stuck: $(cat "$TDIR/a.log")"
+# (b) a 1.0.10+ updater (no pkill in its chain): the app is left alone
+"$APPDIR/SpeakySpeak" "bash $TDIR/inst.sh >> $TDIR/b.log 2>&1; touch $TDIR/b.done" & B=$!
+waitfor "$TDIR/b.done" && kill -0 "$B" 2>/dev/null && ok "newer updater's app left running" || bad "app $B was killed: $(cat "$TDIR/b.log")"
+# (c) the old chain text under something that is not the app: left alone
+/bin/bash -c "bash -c 'bash $TDIR/inst.sh >> $TDIR/c.log 2>&1 && pkill -x SpeakySpeak-test-only; touch $TDIR/c.done'; sleep 30" & C=$!
+waitfor "$TDIR/c.done" && kill -0 "$C" 2>/dev/null && ok "a non-app parent is never killed" || bad "parent $C was killed: $(cat "$TDIR/c.log")"
+kill "$A" "$B" "$C" 2>/dev/null; wait 2>/dev/null
 
 echo; echo "update tests: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

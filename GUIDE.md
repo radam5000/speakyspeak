@@ -30,7 +30,9 @@ A few things sit around that loop:
 - **Updates.** Once a day SpeakySpeak checks whether a new version is out. When one is, an ↑ appears next to the menu-bar icon and Settings ▸ About has an Update button. It pulls the new version into the folder you installed from, rebuilds and relaunches in about a minute, and keeps any changes you made yourself (see [Changing it yourself](#changing-it-yourself)).
 - **Two Macs, one pair of AirPods.** Put the other Mac's Tailscale address in `~/.claude/speak-peer` on each. Before one starts a reply by itself, it asks the other whether it is speaking and waits its turn; if both want to start at the same moment, one goes first. This needs Tailscale running on both Macs: if one can't reach the other, each speaks as if it were alone.
 
-What leaves your Mac: the daily update check, and, only if you turn on the Claude strip, the usage, status and Claude Code version checks. The app sends nothing about you or your replies anywhere.
+- **Your iPhone (in testing, not released yet).** With your iPhone's Tailscale address in `~/.claude/speak-phone`, the app answers that phone, and only that phone, over Tailscale: the SpeakySpeak iPhone app shows the deck, controls it, and with "Play on iPhone" plays the replies itself while this Mac queues silently. The deck then says "Playing on the iPhone" with a Play here button to take it back, and any play on the Mac takes it back too. No file means none of this runs.
+
+What leaves your Mac: the daily update check, and, only if you turn on the Claude strip, the usage, status and Claude Code version checks. If you set up `speak-phone`, your replies go to your own iPhone over your own Tailscale network. The app sends nothing about you or your replies anywhere else.
 
 ## Set this up first
 
@@ -62,7 +64,7 @@ None of this is required. One session works fine on its own. This is the setup t
 3. Settings ▸ Advanced, search `left of the tab bar`, set "In the Minimal theme, should the area left of the tab bar be treated as part of the first tab?" to **Yes**.
 4. Optional: Settings ▸ Advanced, search `new tab button`, set "Remove the new tab button from horizontal tab bars?" to **Yes**, if you never use the + button.
 
-Windows already open keep the old look until you reopen them. The same four from the terminal, with iTerm2 quit first:
+Windows already open keep the old look until you reopen them. The same four from the terminal, with iTerm2 quit first (if your Claude runs inside iTerm2, quitting ends its session, so use the Settings steps above instead):
 
 ```sh
 defaults write com.googlecode.iterm2 TabStyleWithAutomaticOption -int 5
@@ -182,6 +184,7 @@ The Settings window writes plain files in `~/.claude/`, so shell edits and the G
 | `speak-voice` | macOS voice name. Absent probes for the best installed one. |
 | `speak-rate` | Words per minute for macOS voices. |
 | `speak-peer` | The other Mac's Tailscale IP, so the two Macs take turns on one pair of AirPods. |
+| `speak-phone` | Your iPhone's Tailscale IP, for the iPhone app (in testing). Absent means the app never listens for a phone. |
 | `speak-prompt-chime` | Path to a sound file played when Claude is waiting on you. Absent means the macOS Hero sound. |
 | `speak-lead-in` | Seconds of silence before speech when the app has been quiet a while, so shared AirPods finish switching to this Mac before the first word. Default 1.2. Set `0` to turn it off. |
 

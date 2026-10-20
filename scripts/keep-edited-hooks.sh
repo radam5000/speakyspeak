@@ -8,6 +8,9 @@
 # <name>.mine-<date> and install.sh says so. A copy that matches any shipped
 # version is replaced quietly, as before. Outside a git clone (a zip
 # download) there is no history to compare with, so nothing changes.
+# grep -x reads all of its input, never grep -q: install.sh runs under pipefail,
+# and grep -q quitting at the first match SIGPIPEs the loop, so the pipeline
+# returned 141 and a shipped hook was saved as an edit (F-0008, 10/17).
 keep_edited_hooks() {
   local name f blob
   git rev-parse --git-dir >/dev/null 2>&1 || return 0
@@ -18,7 +21,7 @@ keep_edited_hooks() {
     blob=$(git hash-object "$f")
     git log --all --format=%H -- "hooks/$name" 2>/dev/null \
       | while read -r c; do git rev-parse -q --verify "$c:hooks/$name" 2>/dev/null; done \
-      | grep -qx "$blob" && continue
+      | grep -x "$blob" >/dev/null && continue
     cp -p "$f" "$f.mine-$(date +%Y%m%d-%H%M%S)"
     echo "NOTE: ~/.claude/hooks/$name had edits of its own. They are kept in $name.mine-$(date +%Y%m%d)*;"
     echo "      the new version is installed. To keep an edit through updates, make it in"

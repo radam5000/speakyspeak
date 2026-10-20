@@ -346,6 +346,18 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // mirrors the absence of ~/.claude/speak-off — the same kill switch the
     // Stop hook honors, so one button turns the whole pipeline on and off
     @Published var enabled = true
+    // "Play on iPhone" (PhoneLink): this Mac stays quiet but keeps queueing,
+    // and the iPhone app downloads each reply and plays it. Like muted it
+    // blocks every autoplay; unlike muted it is not "speaker off", and any
+    // manual play on the Mac (play(), so also the deck and AirPods) takes
+    // playback back. Persists, so a relaunch mid-walk doesn't start talking
+    // to an empty room.
+    @Published private(set) var onPhone = false {
+        didSet { if demoScene == nil { UserDefaults.standard.set(onPhone, forKey: "onPhone") } }
+    }
+    // where the Mac was in a reply when it handed over, so the phone carries on
+    // from that word instead of the top
+    private(set) var phoneResume: (id: String, position: Double)?
     // .help() tooltips are flaky in a non-activating accessory panel, so
     // hovered controls also describe themselves in the footer hint line
     @Published var hint = ""
@@ -370,6 +382,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private override init() {
         super.init()
         muted = UserDefaults.standard.bool(forKey: "muted")
+        onPhone = UserDefaults.standard.bool(forKey: "onPhone")
         mutedSessions = Set(UserDefaults.standard.stringArray(forKey: "mutedSessions") ?? [])
         let r = UserDefaults.standard.double(forKey: "rate")
         if rateSteps.contains(r) { rate = r }
@@ -595,7 +608,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 // What then PLAYS is the head of the play order, i.e. that
                 // live session's oldest unheard reply, because the earlier
                 // ones are the context that makes the fresh one make sense.
-                if !muted, !isPlaying,
+                if !muted, !onPhone, !isPlaying,
                    items.contains(where: { $0.state == .queued && !isSessionMuted($0)
                                            && Date().timeIntervalSince($0.created) < 120 }),
                    let head = nextPlayable {
@@ -616,7 +629,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var flashedHoldID: String?
 
     private func maybeAutoplay() {
-        guard !muted, !isPlaying else { return }
+        guard !muted, !onPhone, !isPlaying else { return }
         if isPausedMidItem {
             dlog("autoplay held: \(currentID ?? "?") paused mid-reply")
             // Adam chose a visual cue over auto-resume (2026-08-16): a reply
@@ -644,7 +657,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         PeerGate.shared.peerBusy { [weak self] busy in
             guard let self else { return }
             self.claiming = false
-            guard !self.muted, !self.isPlaying, !self.isPausedMidItem else { return }
+            guard !self.muted, !self.onPhone, !self.isPlaying, !self.isPausedMidItem else { return }
             guard self.items.contains(where: { $0.id == item.id && $0.state == .queued }),
                   !self.isSessionMuted(item) else {
                 self.maybeAutoplay()   // played/removed/muted meanwhile — re-pick
@@ -682,6 +695,11 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func play(_ item: SpeechItem, recordHistory: Bool = true) {
         clearAttention()   // audio is flowing again — stop the ripple
         muted = false   // explicitly playing something means "I want sound"
+        if onPhone {    // ...here, on this Mac
+            onPhone = false
+            phoneResume = nil
+            dlog("playback taken back from the iPhone")
+        }
         advanceGen += 1 // cancel any pending chime-gap advance
         // remember what we're leaving so "back one track" can return to it
         // (playPrevious replays with recordHistory:false so it doesn't re-push)
@@ -903,6 +921,46 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func backTrack() {
         if currentID != nil, progress > 3 { seek(to: 0); triggerFlash(); return }
         if !playPrevious(), currentID != nil { seek(to: 0); triggerFlash() }
+    }
+
+    // MARK: - Handoff to the iPhone (PhoneLink)
+
+    func handToPhone() {
+        guard !onPhone else { return }
+        advanceGen += 1   // cancel any pending chime-gap advance
+        phoneResume = nil
+        if let cid = currentID, let i = items.firstIndex(where: { $0.id == cid }), items[i].state != .done {
+            phoneResume = (cid, progress)
+            items[i].state = .queued
+        }
+        stopPlayer()
+        currentID = nil
+        progress = 0
+        duration = 0
+        onPhone = true
+        dlog("playing on the iPhone\(phoneResume.map { String(format: " (from %@ at %.0fs)", $0.id, $0.position) } ?? "")")
+    }
+
+    // From the phone's "Play on Mac": carry on with what the phone was
+    // playing, from where it was, or (phone paused) just stand by.
+    func takeBackFromPhone(id: String?, position: Double, play resume: Bool) {
+        guard onPhone else { return }
+        onPhone = false
+        phoneResume = nil
+        dlog("playback back on the Mac")
+        if resume, let id, let item = items.first(where: { $0.id == id }) {
+            play(item)
+            seek(to: position)
+        }
+    }
+
+    // The phone finished a reply: file it as played here too, so the Mac never
+    // reads it again when the walk is over.
+    func markPlayed(_ item: SpeechItem) {
+        if phoneResume?.id == item.id { phoneResume = nil }
+        guard item.state != .done else { return }
+        setState(item.id, .done)
+        resort()
     }
 
     // MARK: - Play order (session runs)
@@ -1143,7 +1201,10 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         let lead = idle > routeIdleThreshold ? leadInSeconds : 0
         // a failed schedule must never mean silence — fall back to playing now
         if lead > 0, p.play(atTime: p.deviceCurrentTime + lead) {
-            dlog(String(format: "lead-in %.2fs before audio (silent %.0fs, route may have moved)", lead, idle))
+            // lastAudioAt starts at distantPast: the first reply since launch
+            // logs "first since launch" rather than a 63-billion-second gap.
+            let silent = lastAudioAt == .distantPast ? "first since launch" : String(format: "silent %.0fs", idle)
+            dlog(String(format: "lead-in %.2fs before audio (%@, route may have moved)", lead, silent))
         } else {
             p.play()
         }
@@ -1453,6 +1514,297 @@ final class PeerGate {
     }
 }
 
+// MARK: - Phone link (the iPhone app, over Tailscale)
+//
+// The SpeakySpeak iPhone app (phone/ in this repo; not public, Adam's own for
+// now, 2026-10-19) is a remote for this deck and, with "Play on iPhone", the
+// speaker itself: the Mac goes quiet but keeps queueing (Deck.onPhone), and the
+// phone downloads each reply and plays it with the screen locked.
+//
+// Wire-up: ~/.claude/speak-phone holds the phone's Tailscale IP. No file means
+// no listener and nothing else changes. Like PeerGate, it binds only the local
+// address that routes to the phone (the Tailscale one, never the Wi-Fi),
+// rechecks every 30 s, and answers only the phone, loopback and this Mac's own
+// address. Plain HTTP/1.1, one request per connection, so a dropped cell
+// signal costs one request and nothing else:
+//   GET  /state            the deck as JSON (items in play order)
+//   GET  /state?rev=N      the same, but if N is still current it waits up to
+//                          25 s for a change: the phone's live feed (long poll)
+//   GET  /audio/<id>       one reply's m4a
+//   POST /cmd {"op":...}   a deck action; answers with the new state
+final class PhoneLink {
+    static let shared = PhoneLink()
+    private let port: NWEndpoint.Port = 48766
+    private let phonePath = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".claude/speak-phone").path
+    private var listener: NWListener?
+    private var boundAddress = Data()
+    private var phoneAddress: Data?
+    private var timer: Timer?
+    private var bag = Set<AnyCancellable>()
+    private var macName = "Mac"
+
+    // Every deck change bumps rev; a long poll holding an older rev is answered
+    // at once, one holding the current rev waits for the next bump.
+    private var rev = 1
+    private var bumpPending = false
+    private var waiting: [Int: NWConnection] = [:]
+    private var nextWaitID = 0
+
+    // when the phone last asked anything: the deck's "Playing on iPhone" line
+    // says how long ago, so a phone that died on the walk is visible at home
+    private(set) var lastSeen: Date?
+
+    private init() {}
+
+    private var phoneHost: String? {
+        guard let s = try? String(contentsOfFile: phonePath, encoding: .utf8) else { return nil }
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
+    func start() {
+        Deck.shared.objectWillChange
+            .sink { [weak self] _ in self?.scheduleBump() }
+            .store(in: &bag)
+        // Host.current() can wait on name lookups; never on main
+        DispatchQueue.global(qos: .utility).async {
+            let name = Host.current().localizedName ?? "Mac"
+            DispatchQueue.main.async { self.macName = name }
+        }
+        reconcile()
+        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.reconcile()
+        }
+    }
+
+    private func reconcile() {
+        let host = phoneHost
+        DispatchQueue.global(qos: .utility).async {
+            let route = host.flatMap(PeerGate.route(to:))
+            DispatchQueue.main.async { self.bind(route, configured: host != nil) }
+        }
+    }
+
+    private func bind(_ route: (local: Data, peer: Data)?, configured: Bool) {
+        phoneAddress = route?.peer
+        guard let want = route?.local else {
+            // no phone configured, or no Tailscale route to it: no listener
+            if listener != nil {
+                listener?.cancel(); listener = nil; boundAddress = Data()
+                dlog("phone link: stopped (\(configured ? "no Tailscale route to the phone" : "no ~/.claude/speak-phone"))")
+            }
+            return
+        }
+        if listener != nil && want == boundAddress { return }
+        listener?.cancel(); listener = nil
+        let host: NWEndpoint.Host = want.count == 4
+            ? .ipv4(IPv4Address(want)!) : .ipv6(IPv6Address(want)!)
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = .hostPort(host: host, port: port)
+        params.allowLocalEndpointReuse = true
+        guard let l = try? NWListener(using: params) else {
+            dlog("phone link: listener failed to start on \(host)"); return
+        }
+        l.newConnectionHandler = { [weak self] conn in self?.accept(conn) }
+        l.stateUpdateHandler = { [weak self, weak l] state in
+            guard case .failed(let err) = state, let self, let l, self.listener === l else { return }
+            dlog("phone link: listener on \(host) failed: \(err)")
+            self.listener = nil
+        }
+        listener = l
+        boundAddress = want
+        l.start(queue: .main)
+        dlog("phone link: listening on \(host):\(port) for \(phoneHost ?? "?")")
+    }
+
+    private func rawAddress(_ endpoint: NWEndpoint) -> (raw: Data, loopback: Bool)? {
+        guard case .hostPort(let host, _) = endpoint else { return nil }
+        switch host {
+        case .ipv4(let a): return (a.rawValue, a.isLoopback)
+        case .ipv6(let a): return (a.rawValue, a.isLoopback)
+        default: return nil
+        }
+    }
+
+    // MARK: HTTP
+
+    private struct Request {
+        let method: String, path: String, query: [String: String], body: Data
+        // nil until the whole request (headers and Content-Length body) is in
+        init?(_ buf: Data) {
+            guard let end = buf.range(of: Data("\r\n\r\n".utf8)),
+                  let head = String(data: buf[..<end.lowerBound], encoding: .utf8) else { return nil }
+            let lines = head.components(separatedBy: "\r\n")
+            let first = lines[0].split(separator: " ")
+            guard first.count >= 2 else { return nil }
+            var length = 0
+            for line in lines.dropFirst() {
+                let kv = line.split(separator: ":", maxSplits: 1)
+                if kv.count == 2, kv[0].lowercased() == "content-length" {
+                    length = Int(kv[1].trimmingCharacters(in: .whitespaces)) ?? 0
+                }
+            }
+            let bodyStart = end.upperBound
+            guard buf.count - bodyStart >= length else { return nil }
+            method = String(first[0])
+            let target = String(first[1])
+            let parts = target.split(separator: "?", maxSplits: 1)
+            path = parts.first.map(String.init)?.removingPercentEncoding ?? "/"
+            var q: [String: String] = [:]
+            if parts.count == 2 {
+                for pair in parts[1].split(separator: "&") {
+                    let kv = pair.split(separator: "=", maxSplits: 1)
+                    if kv.count == 2 { q[String(kv[0])] = String(kv[1]) }
+                }
+            }
+            query = q
+            body = buf.subdata(in: bodyStart..<(bodyStart + length))
+        }
+    }
+
+    private func accept(_ conn: NWConnection) {
+        guard let from = rawAddress(conn.endpoint),
+              from.loopback || from.raw == phoneAddress || from.raw == boundAddress else {
+            conn.cancel(); return
+        }
+        if from.raw == phoneAddress { lastSeen = Date() }
+        conn.start(queue: .main)
+        read(conn, Data())
+        // nothing legitimate takes this long (a long poll answers within 25 s)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { conn.cancel() }
+    }
+
+    private func read(_ conn: NWConnection, _ buffer: Data) {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, error in
+            guard let self else { return }
+            var buf = buffer
+            if let data { buf.append(data) }
+            if let req = Request(buf) { self.handle(req, conn); return }
+            if done || error != nil || buf.count > 1 << 20 { conn.cancel(); return }
+            self.read(conn, buf)
+        }
+    }
+
+    private func handle(_ r: Request, _ conn: NWConnection) {
+        switch (r.method, r.path) {
+        case ("GET", "/state"):
+            if let since = r.query["rev"].flatMap(Int.init), since == rev {
+                let id = nextWaitID; nextWaitID += 1
+                waiting[id] = conn
+                DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in
+                    guard let self, let c = self.waiting.removeValue(forKey: id) else { return }
+                    self.respond(c, body: self.stateJSON())
+                }
+            } else {
+                respond(conn, body: stateJSON())
+            }
+        case ("GET", let p) where p.hasPrefix("/audio/"):
+            let id = String(p.dropFirst("/audio/".count))
+            // only ids the deck knows, so the path can never leave the queue
+            guard let item = Deck.shared.items.first(where: { $0.id == id }),
+                  let data = try? Data(contentsOf: item.audioURL) else {
+                respond(conn, status: "404 Not Found", type: "text/plain", body: Data("no such reply\n".utf8))
+                return
+            }
+            respond(conn, type: "audio/mp4", body: data)
+        case ("POST", "/cmd"):
+            guard let o = try? JSONSerialization.jsonObject(with: r.body) as? [String: Any],
+                  let op = o["op"] as? String else {
+                respond(conn, status: "400 Bad Request", type: "text/plain", body: Data("bad command\n".utf8))
+                return
+            }
+            let ok = run(op, o)
+            flushBump()   // the answer carries the state this command made
+            respond(conn, status: ok ? "200 OK" : "400 Bad Request", body: stateJSON())
+        default:
+            respond(conn, status: "404 Not Found", type: "text/plain", body: Data("not here\n".utf8))
+        }
+    }
+
+    private func respond(_ conn: NWConnection, status: String = "200 OK",
+                         type: String = "application/json", body: Data) {
+        let head = "HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\n"
+                 + "Cache-Control: no-store\r\nConnection: close\r\n\r\n"
+        var out = Data(head.utf8)
+        out.append(body)
+        conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
+    }
+
+    // objectWillChange fires before the change lands; the bump runs a turn
+    // later, once it has, and one bump covers a burst of changes
+    private func scheduleBump() {
+        guard !bumpPending else { return }
+        bumpPending = true
+        DispatchQueue.main.async { self.flushBump() }
+    }
+
+    private func flushBump() {
+        guard bumpPending else { return }
+        bumpPending = false
+        rev += 1
+        guard !waiting.isEmpty else { return }
+        let ready = waiting
+        waiting.removeAll()
+        let body = stateJSON()
+        for c in ready.values { respond(c, body: body) }
+    }
+
+    // MARK: State and commands
+
+    private func stateJSON() -> Data {
+        let d = Deck.shared
+        let items: [[String: Any]] = d.items.map { it in
+            var o: [String: Any] = [
+                "id": it.id, "session": it.sessionId, "title": it.title, "project": it.project,
+                "preview": it.preview, "text": it.text, "created": it.created.timeIntervalSince1970,
+                "state": it.state == .done ? "done" : (it.state == .playing ? "playing" : "queued"),
+                "sessionMuted": d.isSessionMuted(it), "group": d.groupKey(it),
+            ]
+            if let r = d.runPosition(of: it) { o["run"] = [r.index, r.count] }
+            return o
+        }
+        var o: [String: Any] = [
+            "rev": rev, "mac": macName, "version": Updater.shared.localVersion,
+            "onPhone": d.onPhone, "isPlaying": d.isPlaying, "muted": d.muted, "enabled": d.enabled,
+            "volume": d.volume, "rate": d.rate, "progress": d.progress, "duration": d.duration,
+            "groupBy": d.groupBy.rawValue, "items": items,
+        ]
+        if let c = d.currentID { o["currentID"] = c }
+        if let r = d.phoneResume { o["resume"] = ["id": r.id, "position": r.position] }
+        return (try? JSONSerialization.data(withJSONObject: o)) ?? Data("{}".utf8)
+    }
+
+    private func run(_ op: String, _ o: [String: Any]) -> Bool {
+        let d = Deck.shared
+        let id = o["id"] as? String
+        let item = id.flatMap { id in d.items.first { $0.id == id } }
+        let value = (o["value"] as? NSNumber)?.doubleValue
+        dlog("phone link: \(op)\(id.map { " \($0)" } ?? "")")
+        switch op {
+        case "toggle": d.togglePlay()
+        case "next": d.playNext()
+        case "back": d.backTrack()
+        case "seek": guard let v = value else { return false }; d.seek(to: v)
+        case "skip": guard let v = value else { return false }; d.skip(v)
+        case "play": guard let item else { return false }; d.play(item)
+        case "remove": if let item { d.remove(item) }   // already gone is fine
+        case "muteSession": guard let item else { return false }; d.toggleSessionMute(item)
+        case "groupNext": guard let item else { return false }; d.playGroupNext(d.groupKey(item))
+        case "removeGroup": guard let item else { return false }; d.removeQueued(groupKey: d.groupKey(item))
+        case "clearPlayed": d.clearDone()
+        case "mute": d.toggleMute()
+        case "rate": d.cycleRate()
+        case "volume": guard let v = value else { return false }; d.volume = min(max(v, 0), 1)
+        case "toPhone": d.handToPhone()
+        case "toMac": d.takeBackFromPhone(id: id, position: value ?? 0, play: o["play"] as? Bool ?? false)
+        case "played": if let item { d.markPlayed(item) }
+        default: return false
+        }
+        return true
+    }
+}
+
 // MARK: - Hover hints
 
 struct HoverHint: ViewModifier {
@@ -1687,6 +2039,7 @@ struct DeckView: View {
         VStack(spacing: 0) {
             VStack(spacing: 10) {
                 header(theme)
+                if deck.onPhone { phoneLine(theme) }
                 nowPlaying(theme)
                 toolbar(theme)
                 if !deck.items.isEmpty {
@@ -1743,6 +2096,37 @@ struct DeckView: View {
             .accessibilityLabel("Playback speed")
             .hoverHint("Speed, click to cycle")
         }
+    }
+
+    // "Play on iPhone" is on: this Mac is queueing silently for the phone.
+    // Says when the phone last checked in, so a phone that died on a walk is
+    // obvious at the desk, and one click takes playback back.
+    private func phoneLine(_ theme: Theme) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "iphone")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+            TimelineView(.periodic(from: .now, by: 30)) { ctx in
+                Text(phoneSeenText(at: ctx.date))
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button("Play here") { deck.takeBackFromPhone(id: nil, position: 0, play: false) }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                .help("Take playback back from the iPhone")
+                .hoverHint("Play replies on this Mac again")
+        }
+        .padding(.horizontal, 7)
+    }
+
+    private func phoneSeenText(at now: Date) -> String {
+        guard let seen = PhoneLink.shared.lastSeen else { return "Playing on the iPhone" }
+        let mins = Int(now.timeIntervalSince(seen) / 60)
+        return mins < 2 ? "Playing on the iPhone" : "Playing on the iPhone, last heard from \(mins) min ago"
     }
 
     // The row above the list: what section you're looking at on the left, the
@@ -5829,6 +6213,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         )
         // a session mute changes the badge count without touching items
         .merge(with: deck.$mutedSessions.removeDuplicates().map { _ in () })
+        // handing playback to the iPhone slashes the mark and says so
+        .merge(with: deck.$onPhone.removeDuplicates().map { _ in () })
         // currentID: a skip while already playing changes the reply without
         // toggling isPlaying — Now Playing needs the new title/duration
         .merge(with: deck.$currentID.removeDuplicates().map { _ in () })
@@ -5858,6 +6244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             registerQuietHotKey()
             NowPlayingBridge.shared.setup()
             PeerGate.shared.start()
+            PhoneLink.shared.start()
         }
         updateHUD()
 
@@ -6003,7 +6390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // the badge counts what will actually play — muted sessions' replies
         // sit in the list but aren't "waiting", so they don't keep it lit
         let queued = deck.items.filter { $0.state == .queued && !deck.isSessionMuted($0) }.count
-        let silenced = !deck.enabled || deck.muted || deck.isPausedMidItem
+        let silenced = !deck.enabled || deck.muted || deck.onPhone || deck.isPausedMidItem
         if !deck.isPlaying {
             button.image = statusImage(base: syGlyph, count: queued,
                                        silenced: silenced, on: button)
@@ -6174,6 +6561,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if !deck.enabled      { base = "SpeakySpeak: speech off" }
         else if deck.isPlaying { base = "SpeakySpeak: playing" }
         else if deck.muted    { base = "SpeakySpeak: muted, queuing silently" }
+        else if deck.onPhone  { base = "SpeakySpeak: playing on the iPhone, queuing here" }
         else                  { base = "SpeakySpeak" }
         return queued > 0 ? "\(base) · \(queued) \(queued == 1 ? "reply" : "replies") queued" : base
     }

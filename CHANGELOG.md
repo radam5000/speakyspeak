@@ -2,6 +2,14 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.25 (2026-10-20)
+
+**Updates from 1.0.x finally finish.** Copies still on 1.0.0 to 1.0.9 installed every update but never restarted, so they kept running the old version and nothing said so. Their next Update click now restarts the app onto the new version. (F-0008)
+
+**No more false "edits of its own" note.** An update could say a hook in `~/.claude/hooks` "had edits of its own" and keep a `.mine` copy of it when nobody had touched it. That check is fixed; a `.mine` file it left next to a hook you never edited can be deleted. (F-0008)
+
+**Setting up iTerm2 from inside iTerm2.** The colour-per-window setup no longer has your Claude quit iTerm2 when Claude is running inside it, which ended the session.
+
 ## 1.2.24 (2026-10-07)
 
 **The progress line no longer waits for a hover.** 1.2.23 fixed one cause, but the line could still stall until the pointer went over it. It is now drawn directly by the playback clock instead of waiting for the window to redraw, so it moves on its own however the rest of the window is doing.

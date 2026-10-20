@@ -107,3 +107,8 @@ Optional knobs (plain files):
   ~/.claude/speak-rate   words per minute; absent = voice's natural pace
   ~/.claude/speak-voice  say voice; absent = best installed voice is auto-probed
 EOF
+
+# Last: an app still on the 1.0.x updater cannot relaunch itself; restart it
+# here so this update actually runs (F-0008).
+source scripts/rescue-old-updater.sh
+rescue_old_updater
