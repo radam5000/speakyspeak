@@ -598,7 +598,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if added {
             resort()
             // No window is forced forward on arrival — the menu-bar icon's
-            // badge and pulse signal the new reply instead.
+            // waiting dot signals the new reply instead.
             if !enabled {
                 dlog("arrival while speech off — queued silently")
             } else if initial {
@@ -1437,6 +1437,12 @@ final class PeerGate {
     static func route(to host: String) -> (local: Data, peer: Data)? {
         var hints = addrinfo()
         hints.ai_socktype = SOCK_DGRAM
+        // An IPv4 address asks for IPv4 only: on an IPv6-only network
+        // getaddrinfo otherwise makes up a NAT64 address for it (64:ff9b::…),
+        // which is not Tailscale, so the check below let it through and the
+        // phone link listened on the public IPv6 address (10/20, 3:01 am).
+        var v4 = in_addr()
+        if inet_pton(AF_INET, host, &v4) == 1 { hints.ai_family = AF_INET }
         var res: UnsafeMutablePointer<addrinfo>?
         guard getaddrinfo(host, "48765", &hints, &res) == 0, let ai = res?.pointee else { return nil }
         defer { freeaddrinfo(res) }
@@ -6042,8 +6048,10 @@ func makeSyGlyph() -> NSImage {
           let ci = CIImage(contentsOf: url) else { return fallbackSyGlyph(barH) }
     let thick: CIImage = {
         guard let f = CIFilter(name: "CIMorphologyMaximum",
+                               // 0.016, not 0.0075: the hairline Sy vanished
+                               // beside Apple's icons (Adam picked weight 2, 10/20)
                                parameters: [kCIInputImageKey: ci,
-                                            kCIInputRadiusKey: ci.extent.height * 0.0075]),
+                                            kCIInputRadiusKey: ci.extent.height * 0.016]),
               let out = f.outputImage else { return ci }
         return out.cropped(to: ci.extent)
     }()
@@ -6083,8 +6091,9 @@ func fallbackSyGlyph(_ barH: CGFloat) -> NSImage {
 // The deck lives behind a menu-bar icon instead of floating over everything:
 // left-click drops the panel down as a transient popover (dismisses when you
 // click away), right-click (or ctrl-click) shows a small Mute/Quit menu. The
-// icon itself reflects state — symbol for off/muted/playing/idle, a queue-count
-// badge, and an alpha pulse driven by speech loudness while a reply plays.
+// icon itself reflects state: the Sy, orange with bars moving over it while
+// speaking, crossed out when silenced, with an orange dot when replies wait
+// behind a silenced mark (statusImage).
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
@@ -6201,8 +6210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .sink { [weak self] in self?.refreshStatus() }
             .store(in: &bag)
 
-        // Rebuild the icon only on discrete state changes — not on every
-        // progress/level tick (the pulse handles loudness separately).
+        // Rebuild the icon only on discrete state changes, never on every
+        // progress or level tick.
         let deck = Deck.shared
         Publishers.Merge4(
             deck.$isPlaying.removeDuplicates().map { _ in () },
@@ -6374,32 +6383,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc private func toggleMute() { Deck.shared.toggleMute() }
     @objc private func openSettings() { SettingsWindowController.shared.show() }
 
-    // The icon is the brand "Sy" mark (default) or the speaker status glyph.
-    // Either way: a queue-count badge, an alpha pulse while playing, and a
-    // resting opacity that codes muted/off (the tooltip states it exactly).
+    // What the menu-bar icon shows. Silenced is anything that means nothing
+    // will come out of this Mac: speech off, muted, playing on the iPhone, or
+    // paused part way through a reply. Queued counts what will actually play:
+    // muted sessions' replies sit in the list but aren't "waiting".
+    // A queue with nothing playing and no chime gap is held too (after a
+    // relaunch, or waiting on the other Mac), so it gets the dot like a
+    // silenced one: the reply after this one never lights it.
+    private func iconState() -> (queued: Int, silenced: Bool, speaking: Bool) {
+        let deck = Deck.shared
+        let queued = deck.advancePending ? 0
+            : deck.items.filter { $0.state == .queued && !deck.isSessionMuted($0) }.count
+        let silenced = !deck.enabled || deck.muted || deck.onPhone || deck.isPausedMidItem
+        return (queued, silenced, deck.isPlaying)
+    }
+
     private func refreshStatus() {
         guard let button = statusItem?.button else { return }
         let deck = Deck.shared
-
-        // While playing, the pulse timer animates the icon (EQ bars) — leave the
-        // image alone here so we don't fight it. Otherwise show the resting
-        // glyph, slashed when nothing is going to come out of it: speech off,
-        // muted, or paused part way through a reply. The alternate speaker
-        // icon set and its picker are gone (Adam, 2026-08-24) — one mark, and
-        // the slash carries the state.
-        // the badge counts what will actually play — muted sessions' replies
-        // sit in the list but aren't "waiting", so they don't keep it lit
-        let queued = deck.items.filter { $0.state == .queued && !deck.isSessionMuted($0) }.count
-        let silenced = !deck.enabled || deck.muted || deck.onPhone || deck.isPausedMidItem
-        if !deck.isPlaying {
-            button.image = statusImage(base: syGlyph, count: queued,
-                                       silenced: silenced, on: button)
+        let (queued, silenced, speaking) = iconState()
+        if speaking {
+            startPulse()   // it draws the icon while a reply plays
+        } else {
+            stopPulse()
+            button.image = statusImage(waiting: queued > 0, silenced: silenced,
+                                       speaking: false, on: button)
         }
+        button.alphaValue = 1.0
         drawnAppearance = button.effectiveAppearance.name
         syncFlagBlink()
 
         var parts: [String] = []
-        var tip = stateTooltip(deck, queued: queued)
+        var tip = stateTooltip(deck, queued: deck.items.filter {
+            $0.state == .queued && !deck.isSessionMuted($0) }.count)
         let watch = ClaudeWatch.shared
         if let f = watch.flag {
             let down = watch.services.filter { !$0.ok }.map { "\($0.name) \($0.words)" }
@@ -6417,37 +6433,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // is drawn to the LEFT of the icon (see imagePosition above).
         button.title = parts.isEmpty ? "" : parts.joined(separator: " ") + " "
         button.toolTip = tip
-        // The queue count and the silenced slash are drawn as PIXELS into the
+        // The waiting dot and the silenced line are drawn as PIXELS into the
         // icon, and the title is empty, so without this the app's only entry
-        // point was an unnamed button to VoiceOver and the count was invisible
+        // point was an unnamed button to VoiceOver and the queue was invisible
         // to assistive tech. The tooltip already says everything; speak it.
         button.setAccessibilityLabel(
             tip.replacingOccurrences(of: "\n", with: ". ")
                .replacingOccurrences(of: " · ", with: ", ")
                .replacingOccurrences(of: "↑", with: ""))
-
-        if deck.isPlaying {
-            startPulse()
-        } else {
-            stopPulse()
-            // full strength always: dimming used to code muted/off, and needed
-            // the tooltip to disambiguate. The slash says it outright, and a
-            // dimmed slash just reads as a smudge in a busy menu bar.
-            button.alphaValue = 1.0
-        }
     }
 
     // The menu-bar icon, composed here rather than assembled out of a template
     // image plus a text title.
     //
-    // Adam, 2026-08-25: a pile-up of chats put a bare number beside the mark
-    // and it read as clutter. So a waiting queue now shows as the COUNT over
-    // the mark, with the mark faded back to a backdrop — the number is the
-    // information, the Sy is just where it lives. Orange when those replies
-    // are going to play, grey when they are not, and the slash still means
-    // silenced. The badge draws INSIDE the glyph's own bounds, so the item's
-    // width never changes with the count at all, which retires the last of
-    // the icon-drifting problem from 1.2.2.
+    // Adam, 2026-10-20, from option sheets drawn with the real mark: the
+    // count over a faded mark read as a slashed number, not as SpeakySpeak.
+    // So the Sy is always drawn whole and a little bolder (C2):
+    // - speaking: orange, with three bars rising from its foot to at most
+    //   half its height ("let it be the moving bars from the bottom up and
+    //   going halfway up the logo"; a breathing Sy came first and lost)
+    // - silenced: a level line through the middle, like crossed-out text
+    //   (M3 of eight silenced looks)
+    // - replies waiting: an orange dot top right, only while nothing is
+    //   saying them: silenced, paused, or held after a relaunch ("i don't
+    //   like seeing the dot when it's actively reading. make it an orange
+    //   dot and only when silenced/paused")
+    // Everything draws INSIDE the glyph's own bounds, so the item's width
+    // never changes, which keeps the icon-drifting fix from 1.2.2.
     //
     // This image is NOT a template — a template is one tint by definition and
     // this needs two. That means tinting the mark by hand, so it is drawn
@@ -6473,13 +6485,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let t = Timer(timeInterval: 0.8, repeats: true) { [weak self] _ in
                 guard let self else { return }
                 self.flagLit.toggle()
-                // while playing, the pulse redraws the icon and picks this up
+                // while speaking, the pulse redraws the icon and picks this up
                 if !Deck.shared.isPlaying, let button = self.statusItem?.button {
-                    let deck = Deck.shared
-                    let queued = deck.items.filter { $0.state == .queued && !deck.isSessionMuted($0) }.count
-                    button.image = self.statusImage(base: self.syGlyph, count: queued,
-                                                    silenced: !deck.enabled || deck.muted || deck.isPausedMidItem,
-                                                    on: button)
+                    let (queued, silenced, speaking) = self.iconState()
+                    button.image = self.statusImage(waiting: queued > 0 && !speaking, silenced: silenced && !speaking,
+                                                    speaking: speaking, on: button)
                 }
             }
             RunLoop.main.add(t, forMode: .common)
@@ -6491,48 +6501,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    private func statusImage(base: NSImage, count: Int, silenced: Bool,
-                             on button: NSStatusBarButton) -> NSImage {
+    private func statusImage(waiting: Bool, silenced: Bool, speaking: Bool,
+                             bars: [CGFloat] = [], on button: NSStatusBarButton) -> NSImage {
+        let base = syGlyph
         let size = base.size
         let rect = NSRect(origin: .zero, size: size)
         let img = NSImage(size: size)
         img.lockFocus()
         button.effectiveAppearance.performAsCurrentDrawingAppearance {
             // the mark: drawn for its alpha, then recoloured through it
-            // fainter still when a count AND a slash are both on top of it,
-            // or the mark, the number and the stroke are three greys competing
-            base.draw(in: rect, from: .zero, operation: .sourceOver,
-                      fraction: count > 0 ? (silenced ? 0.16 : 0.28) : 1.0)
-            NSColor.labelColor.set()
+            base.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            (speaking ? Theme.accentNS : NSColor.labelColor).set()
             rect.fill(using: .sourceAtop)
 
-            if count > 0 {
-                let text = count > 99 ? "99+" : "\(count)"
-                // shrink to fit rather than spill past the mark's width
-                var pt: CGFloat = text.count >= 3 ? 9 : 11
-                var str = NSAttributedString(string: text, attributes: badgeAttrs(pt, silenced))
-                while str.size().width > size.width - 1, pt > 6 {
-                    pt -= 0.5
-                    str = NSAttributedString(string: text, attributes: badgeAttrs(pt, silenced))
+            // clear a channel first so a stroke or dot reads over the mark
+            func cutThenFill(_ path: NSBezierPath, channel: CGFloat, stroke: CGFloat?,
+                             color: NSColor = .labelColor) {
+                let ctx = NSGraphicsContext.current
+                ctx?.compositingOperation = .clear
+                if let w = stroke {
+                    path.lineWidth = channel; path.stroke()
+                    ctx?.compositingOperation = .sourceOver
+                    NSColor.labelColor.setStroke()
+                    path.lineWidth = w; path.stroke()
+                } else {
+                    let b = path.bounds.insetBy(dx: -channel, dy: -channel)
+                    let r = min(b.width, b.height) / 2
+                    NSBezierPath(roundedRect: b, xRadius: r, yRadius: r).fill()
+                    ctx?.compositingOperation = .sourceOver
+                    color.setFill()
+                    path.fill()
                 }
-                let b = str.size()
-                str.draw(at: NSPoint(x: (size.width - b.width) / 2,
-                                     y: (size.height - b.height) / 2))
+            }
+            if speaking, !bars.isEmpty {
+                // from the foot of the mark up to at most half its height
+                let markH = size.height * 0.64, foot = (size.height - markH) / 2
+                let bw: CGFloat = 2.4, gap: CGFloat = 1.8
+                let w = CGFloat(bars.count) * bw + CGFloat(bars.count - 1) * gap
+                for (i, f) in bars.enumerated() {
+                    let h = max(bw, markH / 2 * f)
+                    let r = NSRect(x: (size.width - w) / 2 + CGFloat(i) * (bw + gap), y: foot, width: bw, height: h)
+                    cutThenFill(NSBezierPath(roundedRect: r, xRadius: bw / 2, yRadius: bw / 2), channel: 1.0, stroke: nil)
+                }
             }
             if silenced {
-                let inset: CGFloat = 1
+                // a level line through the middle, like crossed-out text
+                // (Adam picked M3 of eight silenced looks, 10/20)
                 let line = NSBezierPath()
-                line.move(to: NSPoint(x: inset, y: inset))
-                line.line(to: NSPoint(x: size.width - inset, y: size.height - inset))
+                line.move(to: NSPoint(x: 0.5, y: size.height / 2))
+                line.line(to: NSPoint(x: size.width - 0.5, y: size.height / 2))
                 line.lineCapStyle = .round
-                NSColor.labelColor.setStroke()
-                // clear a channel first so the stroke reads over mark and number alike
-                NSGraphicsContext.current?.compositingOperation = .clear
-                line.lineWidth = 3.4
-                line.stroke()
-                NSGraphicsContext.current?.compositingOperation = .sourceOver
-                line.lineWidth = 1.6
-                line.stroke()
+                cutThenFill(line, channel: 3.0, stroke: 1.5)
+            }
+            if waiting {
+                let d: CGFloat = 4.6
+                let dot = NSRect(x: size.width - d - 0.2, y: size.height - d - size.height * 0.11,
+                                 width: d, height: d)
+                cutThenFill(NSBezierPath(ovalIn: dot), channel: 1.3, stroke: nil, color: Theme.accentNS)
             }
             if let c = flagColor {
                 let d: CGFloat = 5.5
@@ -6549,13 +6574,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return img
     }
 
-    // Orange means these replies are going to play. Grey means they are piling
-    // up and nothing is going to say them.
-    private func badgeAttrs(_ pt: CGFloat, _ silenced: Bool) -> [NSAttributedString.Key: Any] {
-        [.font: NSFont.systemFont(ofSize: pt, weight: .bold),
-         .foregroundColor: silenced ? NSColor.secondaryLabelColor : Theme.accentNS]
-    }
-
     private func stateTooltip(_ deck: Deck, queued: Int) -> String {
         let base: String
         if !deck.enabled      { base = "SpeakySpeak: speech off" }
@@ -6566,49 +6584,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return queued > 0 ? "\(base) · \(queued) \(queued == 1 ? "reply" : "replies") queued" : base
     }
 
-    // Animated equalizer bars shown while a reply is playing, so the menu bar
-    // visibly signals "talking now." Bars bounce on speech loudness (Deck.level)
-    // with a per-bar phase offset so they keep moving through quiet passages.
-    // Solid bars (full alpha) template-tint bright — unlike the thin Sy strokes.
-    private func eqGlyph(level: Double, phase: CGFloat) -> NSImage {
-        let barH = NSStatusBar.system.thickness
-        let bars = 3
-        let bw: CGFloat = 2.5, gap: CGFloat = 2.0
-        let maxH = barH * 0.62
-        let w = CGFloat(bars) * bw + CGFloat(bars - 1) * gap
-        let img = NSImage(size: NSSize(width: ceil(w + 4), height: ceil(barH)))
-        img.lockFocus()
-        NSColor.black.setFill()   // template image → system tints to the bar's label color
-        let drive = CGFloat(min(max(level, 0), 1))
-        let x0 = (img.size.width - w) / 2
-        for i in 0..<bars {
-            let osc = 0.5 + 0.5 * sin(phase + CGFloat(i) * 2.1)        // 0…1, always moving
-            let frac = 0.28 + 0.72 * osc * max(drive, 0.22)           // floor keeps motion alive
-            let h = maxH * frac
-            let x = x0 + CGFloat(i) * (bw + gap)
-            let rect = NSRect(x: x, y: (barH - h) / 2, width: bw, height: h)
-            NSBezierPath(roundedRect: rect, xRadius: bw / 2, yRadius: bw / 2).fill()
-        }
-        img.unlockFocus()
-        img.isTemplate = true
-        return img
-    }
-
+    // While a reply plays, bars move over the Sy, so the menu bar shows where
+    // the sound comes from. Each bar has its own phase, so they keep moving
+    // through quiet passages; the level (Deck.level) makes loud words taller.
     private func startPulse() {
         guard pulseTimer == nil else { return }
         // 10 Hz, not 15: every new image makes the system re-snapshot the
         // menu-bar item for each display, which was ~22% of the main thread
-        // during speech (2026-09-24). The phase step grew to keep the speed.
+        // during speech (2026-09-24).
         pulseTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 10, repeats: true) { [weak self] _ in
             guard let self, let button = self.statusItem?.button else { return }
             self.pulsePhase += 0.75
-            button.alphaValue = 1.0
-            let bars = self.eqGlyph(level: Deck.shared.level, phase: self.pulsePhase)
-            let waiting = Deck.shared.items.filter {
-                $0.state == .queued && !Deck.shared.isSessionMuted($0) }.count
-            button.image = self.statusImage(base: bars, count: waiting,
-                                            silenced: false, on: button)
+            let level = CGFloat(min(max(Deck.shared.level, 0), 1))
+            let bars = (0..<3).map { i -> CGFloat in
+                let osc = 0.5 + 0.5 * sin(self.pulsePhase + CGFloat(i) * 2.1)
+                return 0.28 + 0.72 * osc * max(level, 0.35)
+            }
+            button.image = self.statusImage(waiting: false, silenced: false, speaking: true,
+                                            bars: bars, on: button)
         }
+        pulseTimer?.fire()
     }
 
     private func stopPulse() {

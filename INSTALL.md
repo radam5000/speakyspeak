@@ -237,7 +237,7 @@ Expected: the clip plays aloud and `deck.log` shows `queued` → `playing` → `
 
 On current Claude Code, `settings.json` hook changes are picked up without restarting — so THIS session's next reply may already be spoken aloud. Send any short reply and listen. If it speaks: step 7 is done. (On older Claude Code versions hooks only load at session start; in that case ask the user to start a **new** session — a new terminal window, a new chat in the desktop app, or a new Claude Code panel/tab in VS Code or Cursor — and send it any short message.)
 
-Within a few seconds of the reply finishing, expected: the reply is spoken aloud, the menu-bar icon shows a queue badge and pulses, and the mini player appears under the icon.
+Within a few seconds of the reply finishing, expected: the reply is spoken aloud, the menu-bar icon turns orange with bars moving over it while it speaks, and the mini player appears under the icon.
 
 Then confirm it from the log — this is the part you can check yourself:
 ```sh

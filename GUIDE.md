@@ -22,7 +22,7 @@ The whole trip, from Claude finishing a reply to you hearing it:
 3. **It cleans them up for listening.** Code blocks are dropped. Links read as their text, bare web addresses as "link", file paths as just the file name, slash commands as words ("code review"), arrows as "to", and emoji and markdown symbols disappear. The reply opens with the time it finished, and with the session name too if you turn that on.
 4. **Your Mac turns it into audio.** With the Kokoro neural voice installed, a small always-on helper renders it in about half a second; otherwise the macOS voice reads it. The audio is evened out to normal speech loudness. Rendering happens on your Mac: the text of your replies never leaves it.
 5. **It joins the queue.** Each reply becomes an audio file plus a note with its session, time and text in `/tmp/claude-speech/queue/`.
-6. **The deck plays them, one at a time.** The menu-bar icon shows how many are waiting. Click it for the full deck: the reply playing now, the list of what's next, and controls. The mini player appears while a reply plays (or always, if you set it). Nothing ever talks over anything else, and ⌃⌥⌘Space silences the current reply from any app.
+6. **The deck plays them, one at a time.** The menu-bar icon turns orange with bars moving over it while a reply plays, and is crossed out when nothing will be heard, with an orange dot if replies are waiting. Click it for the full deck: the reply playing now, the list of what's next, and controls. The mini player appears while a reply plays (or always, if you set it). Nothing ever talks over anything else, and ⌃⌥⌘Space silences the current reply from any app.
 
 A few things sit around that loop:
 

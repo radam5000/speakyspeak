@@ -125,6 +125,9 @@ Liquid Glass or classic frosted|panel styles became Classic/Glassy/Glassier in 1
 reading panel|renamed the mini player in 1.2.5
 macOS 14|the stated minimum became 15.6 in 1.2.11 (the build needs the macOS 26 SDK)
 timestamp rule|the hook stamps every reply itself since 1.2.8; no CLAUDE.md rule needed
+queue badge|the menu-bar count became a dot in 1.2.26
+queue-count badge|the menu-bar count became a dot in 1.2.26
+how many are waiting|the menu-bar count became a dot in 1.2.26
 RETIRED
 
 # the guide has to actually cover what Adam asked it to cover

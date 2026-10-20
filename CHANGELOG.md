@@ -2,6 +2,10 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.26 (2026-10-20)
+
+**A cleaner menu-bar icon.** The Sy is now drawn whole and a little bolder in every state, so it's easy to spot. While a reply plays it turns orange with bars moving up over it, so you can see where the sound is coming from. A line through it now means nothing will be heard, in place of the slash. An orange dot means replies are waiting that nothing is playing, in place of the number over a faded mark. Hover the icon for the exact count.
+
 ## 1.2.25 (2026-10-20)
 
 **Updates from 1.0.x finally finish.** Copies still on 1.0.0 to 1.0.9 installed every update but never restarted, so they kept running the old version and nothing said so. Their next Update click now restarts the app onto the new version. (F-0008)
