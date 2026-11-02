@@ -2,6 +2,12 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.27 (2026-11-02)
+
+**A pause stays a pause through an update.** If a reply was paused when SpeakySpeak updated or was reinstalled, it now comes back paused at the same spot, and a reply that arrived meanwhile waits instead of playing by itself. Before, the relaunch forgot the pause. (F-0008)
+
+**The Claude strip knows the stable channel.** If your Claude Code updates from the stable channel, the strip now compares against npm's stable version, so it no longer says a release is out a week before you can install it.
+
 ## 1.2.26 (2026-10-20)
 
 **A cleaner menu-bar icon.** The Sy is now drawn whole and a little bolder in every state, so it's easy to spot. While a reply plays it turns orange with bars moving up over it, so you can see where the sound is coming from. A line through it now means nothing will be heard, in place of the slash. An orange dot means replies are waiting that nothing is playing, in place of the number over a faded mark. Hover the icon for the exact count.

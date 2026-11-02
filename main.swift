@@ -468,6 +468,44 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         player != nil && !isPlaying && currentID != nil && progress < max(duration - 0.3, 0)
     }
 
+    // A pause outlives the app (2026-10-31). An update or a reinstall
+    // relaunches the deck, the pause lived only in the player, and a reply
+    // that had just arrived then played by itself (twice on 10/20; Sasha's
+    // note in F-0008). The paused reply and its spot are kept here and
+    // restored, still paused, by the first scan; playing anything forgets it.
+    private let pausedKey = "pausedReply"
+    private func rememberPause() {
+        guard demoScene == nil, let id = currentID else { return }
+        UserDefaults.standard.set(["id": id, "at": progress], forKey: pausedKey)
+    }
+    private func forgetPause() {
+        UserDefaults.standard.removeObject(forKey: pausedKey)
+    }
+    private func restorePause() {
+        guard demoScene == nil, let saved = UserDefaults.standard.dictionary(forKey: pausedKey) else { return }
+        let at = saved["at"] as? Double ?? 0
+        guard let id = saved["id"] as? String,
+              let item = items.first(where: { $0.id == id && $0.state != .done }),
+              let p = try? AVAudioPlayer(contentsOf: item.audioURL),
+              at < p.duration - 0.3
+        else { forgetPause(); dlog("saved pause no longer applies, forgotten"); return }
+        p.delegate = self
+        p.enableRate = true
+        p.isMeteringEnabled = true
+        p.rate = Float(rate)
+        p.volume = Float(volume)
+        p.prepareToPlay()
+        p.currentTime = at
+        player = p
+        currentID = id
+        setState(id, .playing)   // what a pause leaves it as
+        resort()
+        duration = p.duration
+        progress = at
+        NowPlayingBridge.shared.update()
+        dlog(String(format: "restored %@ paused at %.0fs of %.0fs (paused before the relaunch)", id, at, p.duration))
+    }
+
     func start() {
         try? FileManager.default.createDirectory(at: queueDir, withIntermediateDirectories: true)
         dlog("deck started (muted: \(muted), rate: \(rate), enabled: \(enabled))")
@@ -599,8 +637,17 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
             resort()
             // No window is forced forward on arrival — the menu-bar icon's
             // waiting dot signals the new reply instead.
+            if initial && !onPhone { restorePause() }
             if !enabled {
                 dlog("arrival while speech off — queued silently")
+            } else if initial && isPausedMidItem {
+                // held; only a reply that just arrived ripples the HUD, not an old backlog
+                if items.contains(where: { $0.state == .queued && !isSessionMuted($0)
+                                           && Date().timeIntervalSince($0.created) < 120 }) {
+                    maybeAutoplay()
+                } else {
+                    dlog("initial scan: \(items.count) item(s) restored, held behind the pause")
+                }
             } else if initial {
                 // relaunching must not blast a stale backlog — on the first
                 // scan, only a reply that just arrived (the hook may have
@@ -679,7 +726,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         muted.toggle()
         if muted {
             advanceGen += 1 // cancel any pending chime-gap advance
-            if isPlaying { player?.pause(); isPlaying = false; stopMeter() }
+            if isPlaying { player?.pause(); isPlaying = false; stopMeter(); rememberPause() }
             dlog("muted")
         } else {
             dlog("unmuted")
@@ -694,6 +741,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     func play(_ item: SpeechItem, recordHistory: Bool = true) {
         clearAttention()   // audio is flowing again — stop the ripple
+        forgetPause()
         muted = false   // explicitly playing something means "I want sound"
         if onPhone {    // ...here, on this Mac
             onPhone = false
@@ -846,6 +894,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
             player?.pause()
             isPlaying = false
             stopMeter()
+            rememberPause()
             dlog("paused \(currentID ?? "?")")
             return
         }
@@ -864,6 +913,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func seek(to t: Double) {
         progress = max(0, min(t, duration))
         player?.currentTime = progress
+        if isPausedMidItem { rememberPause() }   // a relaunch comes back to the new spot
         NowPlayingBridge.shared.update()   // keep Control Center's elapsed honest
     }
 
@@ -934,6 +984,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
             items[i].state = .queued
         }
         stopPlayer()
+        forgetPause()   // the phone carries on from phoneResume; a relaunch must not pin it here
         currentID = nil
         progress = 0
         duration = 0
@@ -1217,6 +1268,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // Resume (or replay) the existing player for the current item — the shared
     // tail of "unpause" from toggleMute and togglePlay.
     private func resumeCurrent(_ p: AVAudioPlayer) {
+        forgetPause()
         if let id = currentID { setState(id, .playing) }
         p.rate = Float(rate)
         startPlayer(p)
@@ -4321,6 +4373,15 @@ final class ClaudeWatch: ObservableObject {
     }
 
     private func loadLatest(fresh: Bool = false) throws -> String {
+        // Claude Code's stable channel installs a release a week or so after
+        // the changelog names it (npm "stable" was 2.1.285 against 2.1.288 on
+        // 10/2), so on that channel "is out" must mean npm's stable version.
+        if ClaudeChannel.current() == "stable" {
+            guard let v = ClaudeChannel.stableVersion(from: try Self.fetch(ClaudeChannel.distTags)) else {
+                throw Plain("npm named no stable Claude Code version.")
+            }
+            return v
+        }
         // fresh falls back to the CDN copy when the API refuses (rate limit)
         let data = fresh
             ? try (try? Self.fetch(changelogAPI, headers: ["Accept": "application/vnd.github.raw"])) ?? Self.fetch(changelogURL)
@@ -4333,6 +4394,31 @@ final class ClaudeWatch: ObservableObject {
     }
 
     // MARK: helpers
+
+    // <<<claude-channel (tests/run-channel-test.sh compiles this block alone)
+    /// Claude Code's release channel, from its user settings (autoUpdatesChannel:
+    /// "latest", the default, "stable" or "rc").
+    enum ClaudeChannel {
+        static let distTags = URL(string: "https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags")!
+
+        static func current(configDir: String? = nil) -> String {
+            let dir = configDir ?? ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"]
+                ?? (NSHomeDirectory() + "/.claude")
+            guard let d = FileManager.default.contents(atPath: dir + "/settings.json"),
+                  let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let c = j["autoUpdatesChannel"] as? String, !c.isEmpty else { return "latest" }
+            return c
+        }
+
+        /// npm's dist-tags answer, e.g. {"stable":"2.1.309","latest":"2.1.316"}.
+        static func stableVersion(from data: Data) -> String? {
+            guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let v = j["stable"] as? String,
+                  let r = v.range(of: #"^\d+\.\d+\.\d+"#, options: .regularExpression) else { return nil }
+            return String(v[r])
+        }
+    }
+    // claude-channel>>>
 
     struct Plain: LocalizedError {
         let msg: String

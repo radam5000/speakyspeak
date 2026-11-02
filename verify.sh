@@ -8,7 +8,8 @@
 #   2. ./build.sh --no-install — the single-file swiftc compile, left in
 #      ./SpeakySpeak.app so the installed (maybe running) app is never touched
 #   3. the contract fixture tests — hooks, settings merge, SDK fallback, the
-#      mini player's drag, and updates over a user's own edits (tests/*.sh); the contracts that have
+#      mini player's drag, updates over a user's own edits, and a pause across a
+#      relaunch (tests/*.sh); the contracts that have
 #      historically regressed; ~70s, silence-is-pass windows included
 #   4. every ```json block in INSTALL.md parses (the copy-paste settings
 #      snippet must never ship malformed)
@@ -45,6 +46,10 @@ bash -n scripts/update.sh && bash -n scripts/keep-edited-hooks.sh
 res $? "bash -n update.sh + keep-edited-hooks.sh"
 bash tests/guide-gate-test.sh
 res $? "tests/guide-gate-test.sh (the guide gate catches a planted gap)"
+bash tests/run-pause-relaunch-test.sh
+res $? "tests/run-pause-relaunch-test.sh (a pause survives a relaunch)"
+bash tests/run-channel-test.sh
+res $? "tests/run-channel-test.sh (the Claude strip follows the stable channel)"
 
 step "4. INSTALL.md JSON blocks parse"
 JB=0; JBAD=0
