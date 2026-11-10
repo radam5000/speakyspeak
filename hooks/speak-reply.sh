@@ -31,6 +31,11 @@ RENDER=$SPEECH_ROOT/render           # warm TTS daemon's request queue
 ALIVE="$RENDER/daemon.alive"         # daemon heartbeat; hook only uses it when fresh
 APP="$HOME/Applications/SpeakySpeak.app"
 [ -f "$HOME/.claude/speak-off" ] && exit 0
+# Quit means quit (Adam, 2026-11-10). The app's Quit command leaves this file
+# and the app deletes it when it is opened again. Without this check the
+# `open -g -a` further down relaunched the app on the very next reply, so Quit
+# never stuck. Exit before rendering: no reopen, no queue, no afplay fallback.
+[ -f "$HOME/.claude/speak-quit" ] && exit 0
 # Per-process silence for headless runs: launchd/cron jobs that run `claude -p`
 # export SPEAKYSPEAK_QUIET=1 so their working narration never reaches the deck
 # (Adam, 2026-09-12: the 5:00 sweep and the 7:30/7:45/8:00 loops were all

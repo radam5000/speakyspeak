@@ -2,6 +2,10 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.28 (2026-11-10)
+
+**Quit means quit.** Quitting SpeakySpeak used to last only until Claude's next reply, which opened it again. Now it stays closed and replies stay silent until you open SpeakySpeak yourself. Only Quit does this: an update, a crash or a logout never leaves it switched off.
+
 ## 1.2.27 (2026-11-02)
 
 **A pause stays a pause through an update.** If a reply was paused when SpeakySpeak updated or was reinstalled, it now comes back paused at the same spot, and a reply that arrived meanwhile waits instead of playing by itself. Before, the relaunch forgot the pause. (F-0008)

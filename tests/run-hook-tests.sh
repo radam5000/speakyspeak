@@ -470,6 +470,27 @@ printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s","hook_event_name":"
   | env HOME="$THOME" PATH="$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R22c" CLAUDE_CODE_ENTRYPOINT=sdk-cli bash "$HOOK"
 [ -e "$R22c/hook.log" ] && bad "a quieted tool call wrote to hook.log" || ok "quieted tool calls leave no trace"
 
+# Quit means quit (2026-11-10): the app's Quit command leaves
+# ~/.claude/speak-quit. While it exists the hook must not reopen the app
+# (open), queue anything, or fall back to afplay; without it, the same
+# transcript queues and opens the app as before.
+echo "test 23: speak-quit keeps a quit app quit"
+SPY="$TDIR/spybin"; mkdir -p "$SPY"
+for t in open afplay; do
+  printf '#!/bin/bash\necho "%s $*" >> "%s/calls"\nexit 0\n' "$t" "$SPY" > "$SPY/$t"; chmod +x "$SPY/$t"
+done
+R23="$TDIR/root23"; touch "$THOME/.claude/speak-quit"
+printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s","hook_event_name":"Stop"}' "$T2" "$SID_FULL" "$PROJ" \
+  | env HOME="$THOME" PATH="$SPY:$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R23" bash "$HOOK"
+rm -f "$THOME/.claude/speak-quit"
+[ -s "$SPY/calls" ] && bad "quit app was touched: $(tr '\n' ' ' < "$SPY/calls")" || ok "no open, no afplay while quit"
+ls "$R23/queue/"*.json >/dev/null 2>&1 && bad "queued while quit" || ok "nothing queued while quit"
+R23b="$TDIR/root23b"
+printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s","hook_event_name":"Stop"}' "$T2" "$SID_FULL" "$PROJ" \
+  | env HOME="$THOME" PATH="$SPY:$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R23b" bash "$HOOK"
+grep -q '^open ' "$SPY/calls" 2>/dev/null && ok "without the marker the app is opened again" || bad "no open call without the marker"
+ls "$R23b/queue/"*.json >/dev/null 2>&1 && ok "without the marker the reply queues" || bad "nothing queued without the marker"
+
 echo
 echo "hook tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

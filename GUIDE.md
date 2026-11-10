@@ -174,6 +174,7 @@ The Settings window writes plain files in `~/.claude/`, so shell edits and the G
 | File | What it does |
 | --- | --- |
 | `speak-off` | Exists = nothing is rendered at all. A hard kill from the shell. |
+| `speak-quit` | Exists = the app was quit with its Quit command, so replies stay silent and nothing reopens it. Opening SpeakySpeak yourself deletes it. |
 | `speak-name-first` | Exists = every reply opens with its session name. Settings ▸ Speech ▸ Say the session name first. |
 | `speak-headless` | Exists = `claude -p` and Agent SDK runs are read aloud too (they are quiet by default). Settings ▸ Speech ▸ Read scripted runs too. |
 | `SPEAKYSPEAK_QUIET=1` (an environment variable, not a file) | Set in a process, the hook exits at once for that Claude Code run only, whatever kind of run it is. Scripted `claude -p` runs are already quiet, so this is for the rare job that starts an ordinary interactive session. |
@@ -201,7 +202,7 @@ When an update arrives, your commits and uncommitted edits are carried over on t
 
 Logs live in `/tmp/claude-speech/`: `hook.log` for rendering, `deck.log` for the app.
 
-- **Nothing is spoken.** Check `~/.claude/speak-off` doesn't exist, then check the full deck isn't muted, then look at `hook.log`.
+- **Nothing is spoken.** If SpeakySpeak isn't in the menu bar, it was quit: open it again (Spotlight, or Finder ▸ your Applications folder). Check `~/.claude/speak-off` doesn't exist, then check the full deck isn't muted, then look at `hook.log`.
 - **A reply was skipped.** Look for it in `hook.log`. Every spoken reply logs a line.
 - **An app you chat in is never read aloud.** If `hook.log` says "scripted run ... not read aloud", the app runs Claude with `claude -p`. Turn on Settings ▸ Speech ▸ Read scripted runs too.
 - **It reads things you don't want.** Set Read replies back to "When Claude finishes."
@@ -223,6 +224,6 @@ I'm Adam, and I made SpeakySpeak. Bugs, ideas, questions, things that just bug y
 
 1. Within a couple of minutes you get an automatic "got it" email, so you know it arrived.
 2. I read every message myself and will write back if there's anything interesting to tell you.
-3. When your fix or idea ships, you hear from me again. If you helped, I'd like to thank you by name in the credits; say so if you'd rather I didn't.
+3. When your fix or idea ships, you hear from me again. If you helped, I'd like to thank you by first name in the credits; say so if you'd rather I didn't.
 
-**Your privacy:** your email address stays in my mailbox and is never published. Your name appears only in the credits, and not if you tell me no. When a report becomes a public GitHub issue, it's a paraphrase of the technical part only. The app itself sends nothing; there is no telemetry.
+**Your privacy:** your email address stays in my mailbox and is never published. Only your first name appears, in the credits, and not if you tell me no. When a report becomes a public GitHub issue, it's a paraphrase of the technical part only. The app itself sends nothing; there is no telemetry.

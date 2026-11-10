@@ -43,6 +43,23 @@ func dlog(_ s: String) {
     }
 }
 
+// Quit means quit until the user opens the app again (Adam, 2026-11-10). The
+// hook opens the app before every reply, so a plain terminate came straight
+// back on the next one. Only the two Quit commands leave the marker; an update
+// relaunch, a crash or a logout terminate without it, so none of them can
+// leave the app silently off. Launching the app clears it (see
+// applicationDidFinishLaunching). A demo instance never touches it.
+let speakQuitURL = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".claude/speak-quit")
+
+func quitForGood() {
+    if demoScene == nil {
+        FileManager.default.createFile(atPath: speakQuitURL.path, contents: nil)
+        dlog("quit by the user: replies stay silent until the app is opened again")
+    }
+    NSApp.terminate(nil)
+}
+
 // MARK: - Anthropic-flavored palette
 
 extension Notification.Name {
@@ -1136,6 +1153,15 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         for item in victims { remove(item) }   // a speaking reply is never touched
     }
 
+    // The phone's "Clear" on Up next: exactly the replies it showed, so one
+    // that arrived after the tap stays. Played and speaking replies are kept.
+    func removeQueued(ids: Set<String>) {
+        let victims = items.filter { ids.contains($0.id) && $0.state == .queued && $0.id != currentID }
+        guard !victims.isEmpty else { return }
+        dlog("removing \(victims.count) queued item(s) (cleared on the phone)")
+        for item in victims { remove(item) }
+    }
+
     // "2 of 6" — where this reply sits in its group's unplayed run. Meaningless
     // when nothing is grouped, so it reports nothing there.
     func runPosition(of item: SpeechItem) -> (index: Int, count: Int)? {
@@ -1851,6 +1877,7 @@ final class PhoneLink {
         case "groupNext": guard let item else { return false }; d.playGroupNext(d.groupKey(item))
         case "removeGroup": guard let item else { return false }; d.removeQueued(groupKey: d.groupKey(item))
         case "clearPlayed": d.clearDone()
+        case "clearQueued": guard let ids = o["ids"] as? [String] else { return false }; d.removeQueued(ids: Set(ids))
         case "mute": d.toggleMute()
         case "rate": d.cycleRate()
         case "volume": guard let v = value else { return false }; d.volume = min(max(v, 0), 1)
@@ -2113,7 +2140,7 @@ struct DeckView: View {
         }
         .frame(minWidth: 340, idealWidth: 360, maxWidth: 500)
         .background(theme.bg.ignoresSafeArea())
-        .contextMenu { Button("Quit SpeakySpeak") { NSApp.terminate(nil) } }
+        .contextMenu { Button("Quit SpeakySpeak") { quitForGood() } }
         .animation(.spring(duration: 0.35), value: deck.items)
         .animation(.easeOut(duration: 0.25), value: deck.currentID)
     }
@@ -6205,6 +6232,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        // Opened by the user after a Quit: replies speak again (quitForGood)
+        if demoScene == nil, FileManager.default.fileExists(atPath: speakQuitURL.path) {
+            try? FileManager.default.removeItem(at: speakQuitURL)
+            dlog("opened after a quit: replies speak again")
+        }
 
         popover.behavior = .transient
         popover.animates = true
@@ -6457,8 +6489,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settings.target = self
         menu.addItem(settings)
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit SpeakySpeak",
-                                action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let quit = NSMenuItem(title: "Quit SpeakySpeak", action: #selector(quitFromMenu), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
     }
 
@@ -6467,6 +6500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // unmute. Flipping `muted` raw let the current reply keep talking (found
     // in the 2026-08-25 audit; shipped that way since the menu-bar move).
     @objc private func toggleMute() { Deck.shared.toggleMute() }
+    @objc private func quitFromMenu() { quitForGood() }
     @objc private func openSettings() { SettingsWindowController.shared.show() }
 
     // What the menu-bar icon shows. Silenced is anything that means nothing
