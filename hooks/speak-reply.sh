@@ -364,6 +364,29 @@ if [ "$kind" = reply ] && [ "$event" != "Stop" ]; then
 fi
 
 if [ "$kind" = reply ] && [ "$event" = "Stop" ]; then
+# last_assistant_message (2026-11-21): Claude Code now hands the Stop hook the
+# final reply's text, and its hooks docs say read-aloud hooks should use it
+# because the transcript may not hold the final message yet at Stop time. It
+# sharpens the gate without replacing it:
+#   - when present, the gate accepts ONLY the entry whose text is that reply
+#     (or ends it), so the start_uuid/120-second freshness guess and the 0.5 s
+#     preamble re-check are not needed: a preamble can never match;
+#   - if that entry is already the .seen one, the reply was spoken before
+#     (Stop also fires on /clear, /compact, /resume) and the hook stays silent;
+#   - if the transcript never shows it within the poll window, the field alone
+#     is spoken, where the hook used to give up silently. No .seen is written
+#     then (there is no uuid); the next real user message is the boundary.
+# Absent (older Claude Code), everything below runs exactly as before.
+# gather_turn still reads the transcript: the field only holds the final text.
+lam=$(printf '%s' "$input" | jq -r '.last_assistant_message // empty' 2>/dev/null)
+norm() { printf '%s' "$1" | perl -CSD -0777 -pe 's/\s+/ /g; s/^ //; s/ $//'; }
+lam_n=""; [ -n "$lam" ] && lam_n=$(norm "$lam")
+[ -n "$lam_n" ] || lam=""
+lam_matches() {  # $1 = entry body: is it the final reply (all of it, or its tail)?
+  local b; b=$(norm "$1")
+  [ -n "$b" ] && case $lam_n in *"$b") return 0 ;; esac
+  return 1
+}
 start_out=$(extract)
 start_uuid=${start_out%%$'\t'*}
 text=""
@@ -373,6 +396,25 @@ for _ in $(seq 1 60); do
   rest=${out#*$'\t'}
   ts=${rest%%$'\t'*}
   body=${rest#*$'\t'}
+  if [ -n "$lam" ] && [ -n "$body" ] && [ "$body" != "null" ]; then
+    if lam_matches "$body"; then
+      if [ "$uuid" = "$last_seen" ]; then
+        # The same words twice in a row ("Done." after "Done."): the transcript
+        # may still be showing the last turn's entry, so give the new one 3 s
+        # to land before taking this for a Stop with nothing new to say.
+        seen_hits=$((${seen_hits:-0} + 1))
+        [ "$seen_hits" -le 6 ] && { sleep 0.5; continue; }
+        echo "--- $(date) $sid last_assistant_message is the reply already spoken ($uuid), silent" >> "$LOG"
+        exit 0
+      fi
+      last_seen=$(cat "$SEEN" 2>/dev/null || echo "")   # same re-read as below
+      text=$body
+      printf '%s' "$uuid" > "$SEEN"
+      echo "$(date) $sid gate: matched last_assistant_message ($uuid)" >> "$LOG"
+      break
+    fi
+    sleep 0.5; continue   # the last entry is not the reply yet: keep waiting
+  fi
   if [ -n "$body" ] && [ "$body" != "null" ] && [ "$uuid" != "$last_seen" ]; then
     ok=0
     if [ "$uuid" != "$start_uuid" ]; then
@@ -401,6 +443,24 @@ for _ in $(seq 1 60); do
   fi
   sleep 0.5
 done
+lam_only=0
+if [ -z "$text" ] && [ -n "$lam" ]; then
+  # Never flushed in 30 s. Speak the field alone, unless the reply IS in the
+  # transcript somewhere (an older, already-handled entry): then stay silent.
+  seen_before=$(jq -rs --arg l "$lam_n" '
+      def norm: gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
+      [.[] | select(.type == "assistant" and ((.isSidechain // false) | not)
+                    and (.message.content | type) == "array")
+           | [.message.content[] | select(.type == "text") | .text] | join("\n") | norm
+           | select(. != "" and . == $l)]
+      | length > 0' "$t" 2>/dev/null)
+  if [ "$seen_before" = true ]; then
+    echo "--- $(date) $sid last_assistant_message matches an older entry, silent" >> "$LOG"
+  else
+    text=$lam; lam_only=1
+    echo "--- $(date) $sid transcript never showed the reply, speaking last_assistant_message (chars=${#lam})" >> "$LOG"
+  fi
+fi
 if [ -z "$text" ]; then
   echo "--- $(date) $sid no fresh text after polling (start: $start_uuid, seen: $last_seen)" >> "$LOG"
   exit 0
@@ -410,12 +470,15 @@ fi
 # still ENDS with that entry. If it doesn't, the transcript moved under us or the
 # shape is unexpected, and the settled entry alone stays the safe answer. (The
 # quoted expansion in a case pattern matches literally, so markdown in $text
-# can't act as a glob.)
+# can't act as a glob.) Skipped when only the field was available: there is
+# no settled entry to gather back from.
+if [ "$lam_only" = 0 ]; then
 full=$(gather_turn)
 case $full in
   *"$text") text=$full ;;
   *) echo "--- $(date) $sid gather_turn tail mismatch, speaking last entry only" >> "$LOG" ;;
 esac
+fi
 fi
 
 # Turn the raw reply into something pleasant to LISTEN to (not read): drop

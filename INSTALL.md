@@ -207,7 +207,7 @@ Expected: `valid JSON`, no error.
 ```sh
 open ~/Applications/SpeakySpeak.app
 ```
-Expected: a "Sy" icon appears in the menu bar (left-click for the full deck, right-click for Settings / Mute / Quit). You can't see the menu bar yourself, so treat the next command as the real check and ask the user to confirm the icon.
+Expected: a "Sy" icon appears in the menu bar (left-click shows or hides the player, right-click for Settings / Mute / Quit). You can't see the menu bar yourself, so treat the next command as the real check and ask the user to confirm the icon.
 
 ```sh
 pgrep -f SpeakySpeak.app/Contents/MacOS/SpeakySpeak
@@ -278,6 +278,7 @@ Do not attach other questions to this one. The whole install asks the user two t
 | Voice sounds robotic / like the built-in macOS voice | Kokoro isn't installed, the daemon/CLI failed, or the **active voice isn't cached** (see the delay row above) and both Kokoro paths failed | Check `hook.log` for `engine=say` lines; cache the active voice per the delay row, redo step 3 if Kokoro was never installed, then `./install.sh` again; or in System Settings → Accessibility → Spoken Content → System Voice, download a better voice (e.g. Ava Premium) — the hook finds it automatically |
 | No menu-bar icon | App isn't running | `open ~/Applications/SpeakySpeak.app` |
 | Silent, and `hook.log` says `scripted run (sdk-cli) not read aloud` | The session runs through `claude -p` or the Agent SDK, which SpeakySpeak keeps quiet by default | `touch ~/.claude/speak-headless` (or Settings ▸ Speech ▸ Read scripted runs too) |
+| Replies queue up (orange dot on the icon) but none plays, or one pauses by itself | Another app has the microphone on, and SpeakySpeak waits for it. `deck.log` says `microphone on: <app>` | Press play once to hear replies anyway, close the app that holds the microphone, or turn off Settings ▸ Speech ▸ "Pause while you dictate" |
 | "Update to X…" fails, or Settings says your copy has changes that clash | The clone has edits that touch the same lines as the update; the updater left it exactly as it was | Settings ▸ About ▸ "Copy the prompt for Claude", or by hand: in the clone, commit the edits, `git fetch && git rebase @{u}`, resolve, `./install.sh`. `/tmp/claude-speech/update.log` has the detail |
 
 Still stuck after the table? Email **hi@speakyspeak.com** with the step that failed and the last lines of `/tmp/claude-speech/hook.log` — a human reads it and replies.
@@ -312,7 +313,7 @@ Full architecture, controls reference, and settings-window documentation: [READM
 
 ## Next: hand them the guide
 
-Installation done (step 8 asked and answered). Point the user at [GUIDE.md](GUIDE.md) and say what it covers: the suggested setup for running several sessions at once, and what every setting does. If they run more than one Claude Code session, the sort menu's "Group by: Session" plus "Order by: Oldest first" is the single most useful thing in it.
+Installation done (step 8 asked and answered). Tell the user three things about the player: click the Sy in the menu bar to show or hide it, the two arrows at its top right switch between the small and the big one, and replies pause by themselves while another app uses the microphone (dictation, a call). Then point them at [GUIDE.md](GUIDE.md) and say what it covers: the suggested setup for running several sessions at once, and what every setting does. If they run more than one Claude Code session, the sort menu's "Group by: Session" plus "Order by: Oldest first" is the single most useful thing in it.
 
 ## Uninstall
 
@@ -326,4 +327,4 @@ rm -f ~/.claude/hooks/speak-reply.sh ~/.claude/hooks/session-end.sh ~/.claude/ho
 uv tool uninstall mlx-audio 2>/dev/null
 ```
 
-Then take SpeakySpeak's hook entries out of `~/.claude/settings.json`. They are the four events shown in step 5, and every one of them names `speak-reply.sh` or `session-end.sh`, so those two names are what to search for. Leave the rest of the file alone. Last, delete the clone (`~/Applications` is the installed copy; the clone is wherever step 1 put it) and the knob files under `~/.claude/` if any were created: `speak-off`, `speak-quit`, `speak-rate`, `speak-voice`, `speak-voice-kokoro`, `speak-engine`, `speak-when`, `speak-min-words`, `speak-prompt-chime`, `speak-peer`, `speak-name-first`, `speak-headless`.
+Then take SpeakySpeak's hook entries out of `~/.claude/settings.json`. They are the four events shown in step 5, and every one of them names `speak-reply.sh` or `session-end.sh`, so those two names are what to search for. Leave the rest of the file alone. Last, delete the clone (`~/Applications` is the installed copy; the clone is wherever step 1 put it) and the knob files under `~/.claude/` if any were created: `speak-off`, `speak-quit`, `speak-rate`, `speak-voice`, `speak-voice-kokoro`, `speak-engine`, `speak-when`, `speak-min-words`, `speak-prompt-chime`, `speak-peer`, `speak-phone`, `speak-lead-in`, `speak-name-first`, `speak-headless`. The app's own settings: `defaults delete com.adamraabe.SpeakySpeak`.

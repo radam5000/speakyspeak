@@ -25,12 +25,18 @@ import Carbon.HIToolbox   // global "quiet" hotkey (RegisterEventHotKey — no A
 // test-isolation seam, so a second instance can run without touching the live
 // deck. SPEAKYSPEAK_DEMO stages canned queue content for pixel-true website /
 // README screenshots (see Deck.seedDemo); its value picks the scene:
-//   "deck" = popover pinned open · "hud" = mini player up · anything = staged data.
+//   "deck" / "popout" = the full deck's window · "hud" = mini player up · "grow" = the mini player growing into it · anything = staged data.
 // Both are unset in normal use and change nothing.
 let speechRoot = ProcessInfo.processInfo.environment["SPEAKYSPEAK_SPEECH_ROOT"] ?? "/tmp/claude-speech"
 let queueDir = URL(fileURLWithPath: speechRoot + "/queue", isDirectory: true)
+// where removed replies wait for ⌘Z (Deck.removeByHand); wiped at launch
+let undoDir = queueDir.appendingPathComponent(".undo", isDirectory: true)
 let logPath = speechRoot + "/deck.log"
 let demoScene: String? = ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO"]
+// SPEAKYSPEAK_DEMO_CHIN=1: a demo instance shows the Claude strip and chin too
+// (live numbers from your own sign-in), for testing their drawers. Never for
+// screenshots meant for the site.
+let demoChin = demoScene != nil && ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_CHIN"] == "1"
 
 func dlog(_ s: String) {
     let line = "\(Date()) \(s)\n"
@@ -66,6 +72,7 @@ extension Notification.Name {
     static let speakyAccentChanged = Notification.Name("speakyAccentChanged")
     static let speakyHUDPreview = Notification.Name("speakyHUDPreview")
     static let speakyOpenDeck = Notification.Name("speakyOpenDeck")
+    static let speakyPopOut = Notification.Name("speakyPopOut")   // object: the NSRect (as NSValue) to open near
 }
 
 extension Color {
@@ -339,12 +346,14 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published var rate: Double = 1.0 {
         didSet {
             player?.rate = Float(rate)
-            UserDefaults.standard.set(rate, forKey: "rate")
+            // a demo shares the live app's defaults: a test click on the
+            // speed button once left the real speed at 2x (11/22)
+            if demoScene == nil { UserDefaults.standard.set(rate, forKey: "rate") }
             if initDone { NowPlayingBridge.shared.update() }
         }
     }
     @Published var muted = false {
-        didSet { UserDefaults.standard.set(muted, forKey: "muted") }
+        didSet { if demoScene == nil { UserDefaults.standard.set(muted, forKey: "muted") } }
     }
     // Per-session mute (playback-only): replies from a muted session keep
     // queueing and rendering, they just never autoplay — every "pick the next
@@ -477,7 +486,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
             // muting the session that's speaking means "stop hearing it now" —
             // same move as skip. A reply merely paused mid-item is left alone;
             // resuming it by hand is explicit enough to override the mute.
-            if let cur = current, cur.sessionId == sid, isPlaying { playNext() }
+            if let cur = current, cur.sessionId == sid, isPlaying { playNext(byHand: false) }
         }
     }
     // paused partway through a reply — autoplay must not steal playback
@@ -527,6 +536,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         try? FileManager.default.createDirectory(at: queueDir, withIntermediateDirectories: true)
         dlog("deck started (muted: \(muted), rate: \(rate), enabled: \(enabled))")
         if demoScene != nil { seedDemo(); return }   // staged content, no watching, no audio
+        try? FileManager.default.removeItem(at: undoDir)   // ⌘Z doesn't reach across a relaunch
         rescan(initial: true)
         watch()
         watchClaudeDir()
@@ -571,6 +581,9 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         duration = 34
         progress = 13
         isPlaying = true   // visual only: no AVAudioPlayer exists in demo
+        if ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_IDLE"] == "1" {
+            isPlaying = false; currentID = nil; progress = 0   // nothing playing, nothing paused
+        }
         // the sort didSets skip persistence in demo, so this never leaks
         switch ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_SORT"] {
         case "flat":    groupBy = .none;    replyOrder = .newest
@@ -694,6 +707,13 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     private func maybeAutoplay() {
         guard !muted, !onPhone, !isPlaying else { return }
+        MicWatch.shared.checkNow()
+        if micBusy, !micOverride {
+            dlog("autoplay held: the microphone is on")
+            // a reply paused by hand isn't waiting for the mic
+            if pausedForMic || !isPausedMidItem, hasQueued { micWaiting = true; micHeldAutoplay = true }
+            return
+        }
         if isPausedMidItem {
             dlog("autoplay held: \(currentID ?? "?") paused mid-reply")
             // Adam chose a visual cue over auto-resume (2026-08-16): a reply
@@ -727,7 +747,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 self.maybeAutoplay()   // played/removed/muted meanwhile — re-pick
                 return
             }
-            guard busy else { self.play(item); return }
+            guard busy else { self.play(item, byHand: false); return }
             dlog("peer deck speaking — holding autoplay")
             guard !self.peerWaitPending else { return }
             self.peerWaitPending = true
@@ -756,7 +776,8 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
 
-    func play(_ item: SpeechItem, recordHistory: Bool = true) {
+    func play(_ item: SpeechItem, recordHistory: Bool = true, byHand: Bool = true) {
+        if byHand { overrideMicByHand() }
         clearAttention()   // audio is flowing again — stop the ripple
         forgetPause()
         muted = false   // explicitly playing something means "I want sound"
@@ -800,6 +821,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         startMeter()
         triggerFlash()   // new reply / skip / back all land here → flash
         dlog("playing \(item.id) (\(item.project))")
+        holdIfMicOn()
     }
 
     private func startMeter() {
@@ -905,8 +927,11 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
 
-    func togglePlay() {
+    func togglePlay(byHand: Bool = true) {
         clearAttention()   // any transport touch counts as "seen"
+        pausedForMic = false   // a hand on play or pause outranks the dictation pause
+        micWaiting = false
+        if byHand, !isPlaying { overrideMicByHand() }
         if isPlaying {
             player?.pause()
             isPlaying = false
@@ -941,20 +966,20 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // audio from a silent, idle deck — it's "make this stop," never "start."
     func quietSkip() {
         guard isPlaying || isPausedMidItem else { dlog("quiet hotkey: idle, ignored"); return }
-        playNext()
+        playNext(byHand: false)   // "make this stop" is not a press of play: mid-dictation the next one waits
     }
 
     // "Skip" = stop hearing the current reply. If something's queued it plays
     // next (the deck is serial); if nothing is, it goes quiet and resets to
     // idle. Works even with an empty queue, so the skip button / global hotkey
     // double as a "make this stop" with no pause/mute side effects.
-    func playNext() {
+    func playNext(byHand: Bool = true) {
         if let id = currentID { setState(id, .done) }
         // While muted, skip must stay "make this stop": play() clears the
         // global mute, so starting the next reply here would unmute the app
         // out loud from a skip meant to silence it.
         if let next = nextPlayable, !muted {
-            play(next)
+            play(next, byHand: byHand)
         } else {
             stopPlayer()
             currentID = nil
@@ -988,6 +1013,111 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func backTrack() {
         if currentID != nil, progress > 3 { seek(to: 0); triggerFlash(); return }
         if !playPrevious(), currentID != nil { seek(to: 0); triggerFlash() }
+    }
+
+    // MARK: - Quiet while you dictate (Adam, 2026-11-22: "When I start
+    // dictating with Mac Whisper, is it possible to temporarily pause?")
+    //
+    // MicWatch reports when another app turns the microphone on (MacWhisper,
+    // Apple's dictation, a call). A reply that is speaking pauses at once;
+    // nothing new starts while the mic is on; when it goes off, the paused
+    // reply carries on from two seconds before where it stopped, so the
+    // sentence you talked over comes back. Only a pause made here resumes by
+    // itself: one you made by hand stays paused.
+    @Published private(set) var micBusy = false
+    private var pausedForMic = false
+    // A play you press yourself wins (Adam, 11/23, after Apple's speech
+    // service held the mic for 12 minutes and every press of play was paused
+    // again: "A"). From that press until the mic goes off, nothing here
+    // pauses or holds; the next time the mic comes on, the pause works again.
+    private var micOverride = false
+    // Something is waiting for the mic right now (a reply paused for it, or
+    // one that would have started), and the apps holding it, for micWaitLine.
+    @Published private(set) var micWaiting = false
+    // An automatic start was held. Without this every mic-off ran autoplay,
+    // so the end of a call started an old backlog (or replies ⌘Z put back)
+    // that nothing had been about to play.
+    private var micHeldAutoplay = false
+    @Published private(set) var micHolders: [String] = []
+
+    /// "MacWhisper", when a reply is waiting for it to let the microphone go.
+    /// Derived, not stored in `hint`: a hover there replaces the text and
+    /// clears it on the way out.
+    var micWaitName: String? {
+        guard micWaiting, !isPlaying, !muted, !onPhone, enabled, isPausedMidItem || hasQueued else { return nil }
+        return micHolders.isEmpty ? "another app" : ListFormatter.localizedString(byJoining: micHolders)
+    }
+    var micWaitLine: String? {
+        micWaitName.map { "Waiting: \($0) \(micHolders.count > 1 ? "are" : "is") using the microphone" }
+    }
+
+    func micHoldersChanged(_ names: [String]) { if micHolders != names { micHolders = names } }
+
+    // The flags are read first: idle, nothing had been reading them, and a
+    // first press of play would be held like an automatic start.
+    private func overrideMicByHand() {
+        MicWatch.shared.checkNow()
+        guard micBusy, !micOverride else { return }
+        micOverride = true
+        pausedForMic = false
+        micWaiting = false
+        dlog("play pressed while the microphone is on: playing anyway")
+    }
+
+    // Nothing starts by itself while the mic is on: MacWhisper silences the
+    // Mac's audio while it records ("Pause audio during dictation"), so a
+    // reply started then ran its playhead to the end with no sound (Adam,
+    // 11/22: "while the sound ... the playhead is still moving"). It waits
+    // instead, and starts when the mic goes off.
+    private func holdIfMicOn() {
+        MicWatch.shared.checkNow()   // idle, the flags weren't being read
+        guard micBusy, !micOverride, isPlaying, SettingsStore.shared.pauseForMic else { return }
+        player?.pause()
+        isPlaying = false
+        stopMeter()
+        rememberPause()
+        pausedForMic = true
+        micWaiting = true
+        dlog("held for the microphone: \(currentID ?? "?")")
+    }
+
+    func micChanged(_ busy: Bool) {
+        micBusy = busy
+        if busy {
+            guard isPlaying, !micOverride, SettingsStore.shared.pauseForMic else { return }
+            togglePlay(byHand: false)
+            pausedForMic = true
+            micWaiting = true
+            dlog("paused for the microphone: \(currentID ?? "?")")
+            return
+        }
+        micOverride = false
+        micWaiting = false
+        let held = micHeldAutoplay
+        micHeldAutoplay = false
+        guard pausedForMic else {
+            if held, enabled { maybeAutoplay() }
+            return
+        }
+        let id = currentID
+        // a beat after the mic goes, so the last word isn't talked over
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.pausedForMic else { return }
+            guard !self.micBusy else { self.micWaiting = true; return }   // back on already
+            self.pausedForMic = false
+            guard self.enabled else { return }   // speech was turned off meanwhile
+            guard self.currentID == id, self.isPausedMidItem, !self.muted, !self.onPhone else { self.maybeAutoplay(); return }
+            self.seek(to: self.progress - 2)
+            self.togglePlay(byHand: false)
+            dlog("microphone off: carrying on with \(id ?? "?")")
+        }
+    }
+
+    // SPEAKYSPEAK_DEMO_MIC=MacWhisper: stage the wait, for stills
+    func demoMicWait(_ name: String) {
+        isPlaying = false
+        micHolders = [name]
+        micWaiting = true
     }
 
     // MARK: - Handoff to the iPhone (PhoneLink)
@@ -1146,11 +1276,12 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         dlog("group \(key) boosted to play next")
     }
 
-    func removeQueued(groupKey key: String) {
+    func removeQueued(groupKey key: String, byHand: Bool = false) {
         let victims = items.filter { groupKey($0) == key && $0.state == .queued }
         guard !victims.isEmpty else { return }
         dlog("removing \(victims.count) queued item(s) from group \(key)")
-        for item in victims { remove(item) }   // a speaking reply is never touched
+        // a speaking reply is never touched
+        if byHand { removeByHand(victims, "Remove Session") } else { for item in victims { remove(item) } }
     }
 
     // The phone's "Clear" on Up next: exactly the replies it showed, so one
@@ -1180,7 +1311,10 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         rate = rateSteps[(i + 1) % rateSteps.count]
     }
 
-    func remove(_ item: SpeechItem) {
+    // `keep`: park the files in undoDir instead of deleting them, so ⌘Z can
+    // bring the reply back. Only the user's own clicks keep; a session ending
+    // and the phone's removals delete for real.
+    func remove(_ item: SpeechItem, keep: Bool = false) {
         let wasCurrentlyPlaying = item.id == currentID && isPlaying
         if item.id == currentID {
             stopPlayer()
@@ -1190,12 +1324,92 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
         items.removeAll { $0.id == item.id }
         history.removeAll { $0 == item.id }
-        try? FileManager.default.removeItem(at: item.audioURL)
-        try? FileManager.default.removeItem(at: queueDir.appendingPathComponent(item.id + ".json"))
-        try? FileManager.default.removeItem(at: queueDir.appendingPathComponent(item.id + ".done"))
+        let fm = FileManager.default
+        if keep { try? fm.createDirectory(at: undoDir, withIntermediateDirectories: true) }
+        for ext in ["m4a", "json", "done"] {
+            let file = queueDir.appendingPathComponent(item.id + "." + ext)
+            if keep {
+                let parked = undoDir.appendingPathComponent(item.id + "." + ext)
+                try? fm.removeItem(at: parked)
+                try? fm.moveItem(at: file, to: parked)
+            } else {
+                try? fm.removeItem(at: file)
+            }
+        }
         // only removing the reply that was speaking advances the queue —
         // deleting an old played row must never start playback
         if wasCurrentlyPlaying { maybeAutoplay() }
+    }
+
+    // MARK: - Undo (Adam, 2026-11-22: "hit Command Z for undo")
+    //
+    // Every removal the user clicks on the Mac (a row's X, a session's X,
+    // Clear played, Delete all) is one undo step; ⌘Z puts those replies back
+    // and ⇧⌘Z removes them again. The removed files wait in queue/.undo
+    // (hidden, so rescan never reads them as arrivals); they are wiped at
+    // launch, and the hook's 2-day sweep reaches them too. Undo never starts
+    // playback: the replies come back to their places in the list, played
+    // ones still played, and the one that was speaking comes back unplayed.
+    let undoer: UndoManager = {
+        let u = UndoManager()
+        u.levelsOfUndo = 50
+        // Each removal is its own step, whatever the run loop does: grouped by
+        // event, two removals with no event between them came back on one ⌘Z.
+        u.groupsByEvent = false
+        return u
+    }()
+
+    private func undoStep(_ what: String, _ f: @escaping (Deck) -> Void) {
+        undoer.beginUndoGrouping()
+        undoer.registerUndo(withTarget: self, handler: f)
+        undoer.setActionName(what)
+        undoer.endUndoGrouping()
+    }
+
+    func removeByHand(_ victims: [SpeechItem], _ what: String) {
+        guard !victims.isEmpty else { return }
+        for item in victims { remove(item, keep: true) }
+        undoStep(what) { $0.putBack(victims, what) }
+        let n = victims.count
+        flashHint("\(n == 1 ? "1 reply" : "\(n) replies") removed · ⌘Z brings \(n == 1 ? "it" : "them") back")
+    }
+
+    private func putBack(_ saved: [SpeechItem], _ what: String) {
+        let fm = FileManager.default
+        var back: [SpeechItem] = []
+        for var item in saved where !items.contains(where: { $0.id == item.id }) {
+            for ext in ["m4a", "json", "done"] {
+                let parked = undoDir.appendingPathComponent(item.id + "." + ext)
+                guard fm.fileExists(atPath: parked.path) else { continue }
+                try? fm.moveItem(at: parked, to: queueDir.appendingPathComponent(item.id + "." + ext))
+            }
+            // swept meanwhile (the 2-day sweep): nothing to play, leave it gone
+            guard fm.fileExists(atPath: item.audioURL.path) else { continue }
+            if item.state == .playing { item.state = .queued }
+            back.append(item)
+        }
+        undoStep(what) { $0.removeByHand(back, what) }
+        guard !back.isEmpty else { return }
+        items.append(contentsOf: back)
+        resort()
+        dlog("undo: \(back.count) item(s) back (\(what))")
+        let n = back.count
+        flashHint("\(n == 1 ? "1 reply" : "\(n) replies") back")
+    }
+
+    func undo() { if undoer.canUndo { undoer.undo() } }
+    func redo() { if undoer.canRedo { undoer.redo() } }
+
+    // A short-lived line where the hover hints go (the row above the list).
+    private var hintGen = 0
+    func flashHint(_ text: String) {
+        hint = text
+        hintGen += 1
+        let gen = hintGen
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self, self.hintGen == gen, self.hint == text else { return }
+            self.hint = ""
+        }
     }
 
     func removeAll(sessionId: String) {
@@ -1208,8 +1422,9 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         for item in victims { remove(item) }
     }
 
-    func clearDone() {
-        for item in items.filter({ $0.state == .done }) { remove(item) }
+    func clearDone(byHand: Bool = false) {
+        let victims = items.filter { $0.state == .done }
+        if byHand { removeByHand(victims, "Clear Played") } else { for item in victims { remove(item) } }
     }
 
     func clearAll() {
@@ -1219,7 +1434,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         progress = 0
         duration = 0
         history.removeAll()
-        for item in Array(items) { remove(item) }
+        removeByHand(Array(items), "Delete All")
     }
 
     // Re-speak the not-yet-played queue in a newly chosen voice. Warm daemon
@@ -1300,6 +1515,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         startPlayer(p)
         isPlaying = true
         startMeter()
+        holdIfMicOn()
     }
 
     private func stopPlayer() {
@@ -1314,6 +1530,148 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if s == .done {
             FileManager.default.createFile(atPath: queueDir.appendingPathComponent(id + ".done").path, contents: nil)
         }
+    }
+}
+
+// MARK: - MicWatch: is another app listening to the microphone?
+//
+// Core Audio lists every process that has audio running, and each says
+// whether it is taking input (kAudioProcessPropertyIsRunningInput, macOS 14
+// and later). MacWhisper holds the mic only while it records (watched on the
+// Pro, 11/22: on while Adam dictated, off within 2 s of stopping), so "some
+// other app is taking input" is the dictation signal; it covers Claude Code's
+// own voice input, Apple's dictation and calls too. Reading the flag needs no
+// microphone permission.
+//
+// Polled, not only listened to. The first version trusted listeners on the
+// process list and on each process's input flag; they caught MacWhisper in
+// one run and missed every dictation after the next relaunch (11/22, deck.log
+// silent while Adam tested twice): the input flag changes without a callback
+// when the process's audio object already exists. So while a reply is
+// speaking (or held for the mic) the flags are read four times a second (one
+// scan of ~45 processes: 0.4 ms of CPU), and anything about to start sound
+// asks once first (checkNow). Idle, nothing is read. The listeners stay as a
+// faster path when they do fire.
+final class MicWatch {
+    static let shared = MicWatch()
+    private var watched: Set<AudioObjectID> = []
+    private(set) var busy = false
+    private let me = getpid()
+    private var timer: Timer?
+    private init() {}
+    // Takes input for a moment whenever this app claims Now Playing, so it
+    // paused every reply the instant it started (caught by the pause-relaunch
+    // test, 11/22; it is also the blip seen while watching MacWhisper).
+    // corespeechd is Apple's speech service (Siri, Apple dictation). It took
+    // the mic for 12 minutes on 11/23 with nobody dictating, and every reply
+    // waited (Adam picked "A": ignore it, at the cost of Apple dictation).
+    private static let ignored: Set<String> = ["com.apple.MediaRemoteUIService", "corespeechd"]
+    private var started = false
+
+    private static func addr(_ sel: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: sel, mScope: kAudioObjectPropertyScopeGlobal,
+                                   mElement: kAudioObjectPropertyElementMain)
+    }
+
+    func start() {
+        started = true
+        var a = Self.addr(kAudioHardwarePropertyProcessObjectList)
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &a, .main) { [weak self] _, _ in
+            self?.refresh()
+        }
+        refresh()
+        let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let d = Deck.shared
+            if d.isPlaying || self.busy { self.evaluate() }
+        }
+        t.tolerance = 0.1
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+        // test seam (tests/run-mic-test.sh): the file appearing is a press of play
+        if let f = ProcessInfo.processInfo.environment["SPEAKYSPEAK_TEST_PRESS"] {
+            let press = Timer(timeInterval: 0.1, repeats: true) { _ in
+                guard (try? FileManager.default.removeItem(atPath: f)) != nil else { return }
+                dlog("test: play pressed")
+                Deck.shared.togglePlay()
+            }
+            RunLoop.main.add(press, forMode: .common)
+        }
+    }
+
+    /// Read the flags now (before anything starts sounding).
+    func checkNow() { if started { evaluate() } }
+
+    private func processes() -> [AudioObjectID] {
+        var a = Self.addr(kAudioHardwarePropertyProcessObjectList)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil, &size) == noErr,
+              size > 0 else { return [] }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil, &size, &ids) == noErr
+        else { return [] }
+        return ids
+    }
+
+    private func refresh() {
+        let procs = Set(processes())
+        for p in procs.subtracting(watched) {
+            var a = Self.addr(kAudioProcessPropertyIsRunningInput)
+            if AudioObjectAddPropertyListenerBlock(p, &a, .main, { [weak self] _, _ in self?.evaluate() }) == noErr {
+                watched.insert(p)
+            }
+        }
+        watched.formIntersection(procs)   // a gone process took its listener with it
+        evaluate()
+    }
+
+    // What a person would call it. Claude Code's own voice input runs as
+    // ~/.local/share/claude/versions/2.1.330, so the bare executable name read
+    // "2.1.330 is using the microphone"; a browser's mic belongs to a
+    // "Google Chrome Helper".
+    static func displayName(app: String?, path: String) -> String {
+        if path.contains("/claude/versions/") { return "Claude Code" }
+        let exe = (path as NSString).lastPathComponent
+        let n = app ?? (exe == "claude" ? "Claude Code" : exe)
+        if let r = n.range(of: " Helper"), r.lowerBound > n.startIndex { return String(n[..<r.lowerBound]) }
+        return n.isEmpty ? "another app" : n
+    }
+
+    // who, other than this app, is taking input right now
+    private func listeners() -> [(id: String, name: String)] {
+        var who: [(id: String, name: String)] = []
+        // test seam (tests/run-mic-test.sh): the file's presence is a mic in use
+        if let f = ProcessInfo.processInfo.environment["SPEAKYSPEAK_TEST_MIC"],
+           FileManager.default.fileExists(atPath: f) { who.append(("test-mic", "test-mic")) }
+        for p in processes() {
+            var input: UInt32 = 0, pid: pid_t = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            var a = Self.addr(kAudioProcessPropertyIsRunningInput)
+            guard AudioObjectGetPropertyData(p, &a, 0, nil, &size, &input) == noErr, input != 0 else { continue }
+            size = UInt32(MemoryLayout<pid_t>.size)
+            a = Self.addr(kAudioProcessPropertyPID)
+            _ = AudioObjectGetPropertyData(p, &a, 0, nil, &size, &pid)
+            guard pid != me else { continue }
+            let app = NSRunningApplication(processIdentifier: pid)
+            var path = [CChar](repeating: 0, count: 4096)
+            let full = proc_pidpath(pid, &path, UInt32(path.count)) > 0 ? String(cString: path) : ""
+            let exe = (full as NSString).lastPathComponent
+            guard !Self.ignored.contains(app?.bundleIdentifier ?? ""), !Self.ignored.contains(exe) else { continue }
+            let id = app?.bundleIdentifier ?? (exe.isEmpty ? "pid \(pid)" : "\(exe) (pid \(pid))")
+            let name = Self.displayName(app: app?.localizedName, path: full)
+            if !who.contains(where: { $0.name == name }) { who.append((id, name)) }
+        }
+        return who
+    }
+
+    private func evaluate() {
+        let found = listeners()
+        let on = !found.isEmpty
+        Deck.shared.micHoldersChanged(found.map { $0.name })
+        guard on != busy else { return }
+        busy = on
+        dlog(on ? "microphone on: \(found.map { $0.id }.joined(separator: ", "))" : "microphone off")
+        if SettingsStore.shared.pauseForMic || !on { Deck.shared.micChanged(on) }
     }
 }
 
@@ -1998,6 +2356,7 @@ struct NoWindowDrag: NSViewRepresentable {
 }
 extension View {
     func noWindowDrag() -> some View { background(NoWindowDrag()) }
+    func fadeInOnAppear() -> some View { modifier(FadeInOnAppear()) }
 }
 
 struct Scrubber: View {
@@ -2081,7 +2440,7 @@ struct VolumeSlider: View {
                     .onEnded { _ in dragging = false })
             .onHover { hovering = $0 }
         }
-        .frame(width: 52, height: 16)
+        .frame(minWidth: 34, idealWidth: 52, maxWidth: 52, minHeight: 16, maxHeight: 16)
         .noWindowDrag()
         .help("Volume")
         // labeled but previously inert to VoiceOver: no value, no way to
@@ -2098,6 +2457,16 @@ struct VolumeSlider: View {
     }
 }
 
+// Opacity only: the layout around it changes at once (a window or panel has
+// already made room), and only the new content fades in.
+struct FadeInOnAppear: ViewModifier {
+    @State private var shown = false
+    func body(content: Content) -> some View {
+        content.opacity(shown ? 1 : 0)
+            .onAppear { withAnimation(.easeOut(duration: 0.18)) { shown = true } }
+    }
+}
+
 // MARK: - Main view
 
 func fmtTime(_ s: Double) -> String {
@@ -2110,6 +2479,33 @@ func fmtRate(_ r: Double) -> String {
     r == 1.0 ? "1×" : String(format: "%g×", r)
 }
 
+// Drag to move the window, for a window with no title bar (the full deck,
+// 11/22). An AppKit view under the header's empty space, moving the window
+// by hand the way the mini player's ClickThroughHostingView does: the
+// cursor's screen position minus where it grabbed. Two things tried first:
+// Apple's WindowDragGesture hands the drag to the window server, which no
+// test can drive without taking over the real mouse; a SwiftUI DragGesture
+// stops reporting once the window moves, since the cursor then stays put
+// relative to the window (it moved the window 1pt, then nothing).
+struct WindowDragArea: NSViewRepresentable {
+    final class Handle: NSView {
+        private var grab: (mouse: NSPoint, origin: NSPoint)?
+        override func mouseDown(with e: NSEvent) {
+            guard let w = window else { return }
+            grab = (w.convertPoint(toScreen: e.locationInWindow), w.frame.origin)
+        }
+        override func mouseDragged(with e: NSEvent) {
+            guard let w = window, let g = grab else { return }
+            let m = w.convertPoint(toScreen: e.locationInWindow)
+            w.setFrameOrigin(NSPoint(x: g.origin.x + m.x - g.mouse.x, y: g.origin.y + m.y - g.mouse.y))
+        }
+        override func mouseUp(with e: NSEvent) { grab = nil }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    }
+    func makeNSView(context: Context) -> Handle { Handle() }
+    func updateNSView(_ v: Handle, context: Context) {}
+}
+
 struct DeckView: View {
     @ObservedObject var deck = Deck.shared
     @ObservedObject private var updater = Updater.shared
@@ -2117,7 +2513,14 @@ struct DeckView: View {
     // places and would otherwise keep the old colour until something else
     // happened to redraw it
     @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var popOut = PopOutController.shared
     @Environment(\.colorScheme) private var scheme
+    // Always true since the menu-bar popover went (11/22): the deck is a window
+    // you resize, so the list takes the room. false kept the popover's fixed
+    // width and 280pt list.
+    let poppedOut: Bool
+
+    init(poppedOut: Bool = true) { self.poppedOut = poppedOut }
 
     var body: some View {
         let theme = Theme.of(scheme)
@@ -2134,13 +2537,28 @@ struct DeckView: View {
             }
             .padding(.horizontal, 14)
             .padding(.bottom, 12)
-            .padding(.top, 13)
+            .padding(.top, 12)   // the header sits at the very top: no title bar row (11/22)
+            .frame(maxHeight: poppedOut ? .infinity : nil, alignment: .top)
             // Claude Check, folded in (Settings ▸ Claude); never in the staged screenshots
-            if settings.claudeChin && demoScene == nil { ClaudeChin(theme: theme) }
+            if settings.claudeChin && (demoScene == nil || demoChin) {
+                ClaudeChin(theme: theme, open: $popOut.drawerOpen,
+                           onDrawerHeight: { popOut.drawerHeight = $0 })
+            }
         }
-        .frame(minWidth: 340, idealWidth: 360, maxWidth: 500)
+        // No minHeight of its own: the window's minimum is then what the deck
+        // really needs (header, now playing, toolbar, 80pt of list, the chin),
+        // so a resize can't squeeze it. A fixed 260 here let the window go
+        // shorter than the content, which then overflowed: the header slid
+        // under the traffic lights and the bottom was cut off (Adam, 11/22).
+        .frame(minWidth: 340, idealWidth: 360, maxWidth: poppedOut ? .infinity : 500,
+               maxHeight: poppedOut ? .infinity : nil)
+        .ignoresSafeArea(.container, edges: .top)   // up into the (hidden) title bar
         .background(theme.bg.ignoresSafeArea())
-        .contextMenu { Button("Quit SpeakySpeak") { quitForGood() } }
+        .contextMenu {
+            PlayerVisibilityMenu()
+            Divider()
+            Button("Quit SpeakySpeak") { quitForGood() }
+        }
         .animation(.spring(duration: 0.35), value: deck.items)
         .animation(.easeOut(duration: 0.25), value: deck.currentID)
     }
@@ -2150,9 +2568,26 @@ struct DeckView: View {
         // now-playing card already carry the brand and the speech pulse, and
         // the panel's own title does not need a second logo above it.
         HStack(spacing: 9) {
+            // Close at the top left, where a Mac window's is (Adam, 11/22);
+            // the size button stays top right, on the mini player's spot.
+            Button(action: { PlayerVisibility.hideUntilNextReply() }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(theme.secondary)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Hide until the next reply. Right-click for more")
+            .accessibilityLabel("Hide the player until the next reply")
+            .hoverHint("Hide until the next reply")
+            .padding(.leading, -4)   // the glyph's edge, not its frame, lines up with the card below
             Text("SpeakySpeak")
                 .font(.system(size: 15, weight: .semibold, design: .serif))
                 .foregroundStyle(theme.text)
+                .lineLimit(1)
+                .fixedSize()   // never "SpeakySpea / k" on a narrow deck (Adam, 11/22)
+                .allowsHitTesting(false)   // the drag area below takes it
             Spacer()
             Button(action: { deck.toggleMute() }) {
                 Image(systemName: deck.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
@@ -2180,7 +2615,22 @@ struct DeckView: View {
             .help("Playback speed, click to cycle")
             .accessibilityLabel("Playback speed")
             .hoverHint("Speed, click to cycle")
+            // the full deck folds back into the mini player
+            Button(action: { popOut.collapseToMini() }) {
+                Image(systemName: "arrow.down.right.and.arrow.up.left")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(theme.secondary)
+                    .frame(width: 24, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Back to the mini player")
+            .accessibilityLabel("Close the full deck, back to the mini player")
+            .hoverHint("Back to the mini player")
         }
+        // the window's handle now there's no title bar: the title and the gap
+        // (and the margin above them) drag it; the buttons sit on top
+        .background { WindowDragArea().padding(.top, -12).padding(.horizontal, -14) }
     }
 
     // "Play on iPhone" is on: this Mac is queueing silently for the phone.
@@ -2236,7 +2686,14 @@ struct DeckView: View {
     private func toolbar(_ theme: Theme) -> some View {
         let hasDone = deck.items.contains { $0.state == .done }
         return HStack(spacing: 2) {
-            if deck.hint.isEmpty {
+            if deck.hint.isEmpty, let wait = deck.micWaitLine {
+                Text(wait)
+                    .font(.system(size: 10, design: .serif).italic())
+                    .foregroundStyle(theme.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .help(wait)
+            } else if deck.hint.isEmpty {
                 Text(listLabel)
                     .font(.system(size: 9, weight: .bold))
                     .kerning(0.8)
@@ -2256,7 +2713,7 @@ struct DeckView: View {
             toolbarButton("wind", theme, disabled: !hasDone,
                           help: "Clear played: sweep away every reply you've heard",
                           label: "Clear played", hint: "Clear played") {
-                deck.clearDone()
+                deck.clearDone(byHand: true)
             }
             toolbarButton("trash", theme, disabled: deck.items.isEmpty,
                           help: "Delete all: remove every reply, played and queued",
@@ -2389,13 +2846,27 @@ struct DeckView: View {
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Scrubber(theme: theme)
-                    HStack(spacing: 16) {
+                    // The buttons are one symmetric cluster centred on the
+                    // card, with the times laid UNDER it at the edges, so the
+                    // play button sits on the centre line (Adam, 11/22: "it
+                    // should be centered properly"; next had no partner then).
+                    ZStack {
+                    HStack {
                         MeterReader { m in
                             Text(fmtTime(m.progress))
                                 .font(.system(size: 10).monospacedDigit())
                                 .foregroundStyle(theme.secondary)
                         }
                         Spacer()
+                        Text(fmtTime(deck.duration))
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundStyle(theme.secondary)
+                    }
+                    HStack(spacing: 16) {
+                        transportButton("backward.end.fill", theme) { deck.backTrack() }
+                            .help("Restart this reply, or go back one")
+                            .accessibilityLabel("Restart this reply, or go back one")
+                            .hoverHint("Restart · back one reply")
                         transportButton("gobackward.10", theme) { deck.skip(-10) }
                             .help("Back 10 seconds")
                             .accessibilityLabel("Back 10 seconds")
@@ -2411,10 +2882,7 @@ struct DeckView: View {
                             .hoverHint(deck.hasQueued ? "Skip to the next reply" : "Skip: stop this reply")
                             .disabled(!deck.isPlaying && !deck.hasQueued)
                             .opacity(!deck.isPlaying && !deck.hasQueued ? 0.35 : 1)
-                        Spacer()
-                        Text(fmtTime(deck.duration))
-                            .font(.system(size: 10).monospacedDigit())
-                            .foregroundStyle(theme.secondary)
+                    }
                     }
                 }
                 .padding(12)
@@ -2490,11 +2958,22 @@ struct DeckView: View {
                 }
             }
             .padding(.top, 2)
+            .padding(.bottom, 22)   // the last row can scroll clear of the fade
         }
         // trackpads and wheels still scroll; the overlay bar covered the
         // row action icons on the right edge (Adam, 2026-08-25)
         .scrollIndicators(.hidden)
-        .frame(minHeight: 80, maxHeight: 280)
+        // The list fades out at its bottom edge instead of slicing a row in
+        // half against the footer (Adam, 11/22: "a little strip that's cut
+        // off at the bottom ... or a fading gradient").
+        .mask {
+            VStack(spacing: 0) {
+                Rectangle()
+                LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 26)
+            }
+        }
+        .frame(minHeight: 80, maxHeight: poppedOut ? .infinity : 280)
     }
 
     // `playable` = the live section, whose group headers get the reorder and
@@ -2606,7 +3085,7 @@ struct GroupHeaderRow: View {
                 .help("Play this session next")
                 .hoverHint("Play this session next")
                 .accessibilityLabel("Play \(block.title) next")
-                Button(action: { deck.removeQueued(groupKey: block.key) }) {
+                Button(action: { deck.removeQueued(groupKey: block.key, byHand: true) }) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 13))
                         .foregroundStyle(theme.secondary)
@@ -2625,7 +3104,7 @@ struct GroupHeaderRow: View {
         // the header's hover-revealed buttons, reachable without a pointer
         .accessibilityElement(children: .combine)
         .accessibilityAction(named: "Play this session next") { deck.playGroupNext(block.key) }
-        .accessibilityAction(named: "Remove this session's queued replies") { deck.removeQueued(groupKey: block.key) }
+        .accessibilityAction(named: "Remove this session's queued replies") { deck.removeQueued(groupKey: block.key, byHand: true) }
         .onHover { inside in
             hover = inside
             if !inside, deck.hint.hasPrefix("Play this") || deck.hint.hasPrefix("Remove this") {
@@ -2692,7 +3171,7 @@ struct DeckRow: View {
             .accessibilityAction(named: "Play now") { deck.play(item) }
             .accessibilityAction(named: sessionMuted ? "Unmute this session"
                                                      : "Mute this session") { deck.toggleSessionMute(item) }
-            .accessibilityAction(named: "Remove from the queue") { deck.remove(item) }
+            .accessibilityAction(named: "Remove from the queue") { deck.removeByHand([item], "Remove Reply") }
 
             if effHover {
                 Button(action: { deck.play(item) }) {
@@ -2705,7 +3184,7 @@ struct DeckRow: View {
                 .hoverHint("Play now")
                 .accessibilityLabel("Play \(item.title) now")
                 muteButton
-                Button(action: { deck.remove(item) }) {
+                Button(action: { deck.removeByHand([item], "Remove Reply") }) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 14))
                         .foregroundStyle(theme.secondary)
@@ -3517,6 +3996,7 @@ extension View {
 struct MiniDeckView: View {
     @ObservedObject var deck = Deck.shared
     @ObservedObject var settings = SettingsStore.shared
+    @ObservedObject var mini = MiniHUDController.shared
     @Environment(\.colorScheme) private var scheme
     var onHover: (Bool) -> Void = { _ in }
     @State private var shimmerStart: Date?   // set when a new reply starts → glow pulse
@@ -3533,6 +4013,20 @@ struct MiniDeckView: View {
         let cardW: CGFloat = 264
         VStack(spacing: 8) {
             HStack(spacing: 7) {
+                // hide until the next reply: top left, where a Mac window's
+                // close is (Adam, 11/22); expand stays top right
+                Button(action: { PlayerVisibility.hideUntilNextReply() }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(theme.secondary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .noWindowDrag()
+                .help("Hide until the next reply. Right-click for more")
+                .accessibilityLabel("Hide the mini player until the next reply")
+                .padding(.leading, -4)
                 MeterReader { m in Spark(size: 12, pulse: deck.isPlaying ? m.level : 0) }
                 Text(deck.current?.title ?? "SpeakySpeak")
                     .font(.system(size: 12, weight: .semibold, design: .serif))
@@ -3544,8 +4038,9 @@ struct MiniDeckView: View {
                 // (Adam, 2026-08-23): on a panel with no other text, knowing
                 // WHAT is being read beats knowing where it sits in a queue.
                 // The counter still lives on the popover's now-playing card.
-                if let cur = deck.current, !cur.preview.isEmpty {
-                    Text("· \(cur.preview)")
+                let waiting = deck.micWaitName.map { "Mic: \($0)" }
+                if let line = waiting ?? deck.current?.preview, !line.isEmpty {
+                    Text("· \(line)")
                         .font(.system(size: 10))
                         // Deliberately stronger than the palette's secondary,
                         // which measures 3.28:1 on the light card — under the
@@ -3561,24 +4056,28 @@ struct MiniDeckView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityLabel("Now reading: \(cur.preview)")
+                        .help(deck.micWaitLine ?? "")
+                        .accessibilityLabel(deck.micWaitLine ?? "Now reading: \(line)")
                 } else {
                     Spacer(minLength: 0)
                 }
-                // no per-reply dismiss when the panel is pinned "always visible"
-                if settings.hudVisibility != .always {
-                    Button(action: { MiniHUDController.shared.dismiss() }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(theme.secondary)
-                            .frame(width: 16, height: 16)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .noWindowDrag()
-                    .help("Dismiss. It pops back up with the next reply")
-                    .accessibilityLabel("Hide the mini player")
+                // No pin (Adam picked option A, 11/22): a mini player you open
+                // stays up anyway, and Always is in the right-click menu.
+                // grow into the full deck: a window you drag, resize and keep open
+                Button(action: {
+                    NotificationCenter.default.post(name: .speakyPopOut,
+                                                    object: MiniHUDController.shared.frameValue)
+                }) {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(theme.secondary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .noWindowDrag()
+                .help("Open the full deck: the list, and a window you can move and resize")
+                .accessibilityLabel("Open the full deck")
             }
             HStack(spacing: 0) {
                 // far left: restart this reply, then step back to the previous one
@@ -3617,16 +4116,34 @@ struct MiniDeckView: View {
             }
             .padding(.horizontal, 2)
             miniProgress(theme)
-            if settings.claudeChin && demoScene == nil {
+            if settings.claudeChin && (demoScene == nil || demoChin) {
                 ClaudeStrip(theme: theme, glass: glass).padding(.top, 6)
+                    // the drawer's height, measured unseen (see ClaudeChin)
+                    .background(alignment: .top) {
+                        ClaudeDetails(theme: theme, rolled: true)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .hidden()
+                            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
+                                mini.drawerHeight = $0 + 8 + 4   // + the stack's spacing + top padding
+                            }
+                    }
+                if mini.drawerOpen {
+                    ClaudeDetails(theme: theme, rolled: true)
+                        .padding(.top, 4)
+                        .noWindowDrag()   // its refresh button and link are controls
+                        .fadeInOnAppear()
+                }
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
         .frame(width: cardW)
         .hudSurface(settings.hudStyle, cornerRadius: 15, fill: theme.card, stroke: theme.cardStroke)
+        // a touch smaller than the deck's, so it fades out inside the 18pt margin
+        .background(EdgeGlow(level: EdgeGlow.level, cornerRadius: 15, scale: 0.85))
         .overlay(RainbowRipple(active: deck.attentionWanted))
         .overlay(ShimmerGlow(startedAt: shimmerStart))
+        .contextMenu { PlayerVisibilityMenu() }
         // transparent margin so the white flash can bloom past the card edge
         // instead of being hard-clipped at the panel's rectangular bounds
         .padding(18)
@@ -3861,12 +4378,45 @@ extension NSStatusBarButton {
     }
 }
 
-final class MiniHUDController {
+final class MiniHUDController: ObservableObject {
     static let shared = MiniHUDController()
+
+    // The Claude drawer under the strip: a click on the strip opens it and the
+    // panel grows DOWN by its height at once, top edge fixed (Adam, 11/22: the
+    // usage click used to open the menu-bar popover). It folds when the mini
+    // player goes away.
+    @Published var drawerOpen = false {
+        didSet {
+            guard drawerOpen != oldValue, let p = panel, isVisible, drawerHeight > 0 else { return }
+            let dh = drawerOpen ? drawerHeight : -drawerHeight
+            let f = p.frame
+            programmaticMove = true
+            // parked low on the screen there is no room below: move up by what
+            // is missing, and back down when it folds (18pt of the panel is
+            // transparent margin, which may hang over the edge)
+            var y = f.minY - dh
+            if drawerOpen {
+                let floor = ((p.screen ?? NSScreen.main)?.visibleFrame.minY ?? y) - 18
+                drawerLift = max(0, floor - y)
+                y += drawerLift
+            } else {
+                y -= drawerLift
+                drawerLift = 0
+            }
+            p.setFrame(NSRect(x: f.minX, y: y, width: f.width, height: f.height + dh), display: true)
+            DispatchQueue.main.async { [weak self] in
+                self?.programmaticMove = false
+                self?.refit()   // true up to the laid-out height, still top-anchored
+            }
+        }
+    }
+    var drawerHeight: CGFloat = 0
+    private var drawerLift: CGFloat = 0
 
     private var panel: NSPanel?
     private var host: ClickThroughHostingView<MiniDeckView>?
     private(set) var isVisible = false
+    private var showGen = 0   // bumped by every show(), so a fade-out under way can't hide it
     private var hovering = false
     private var lastDesired = false
     private var hideWork: DispatchWorkItem?
@@ -3887,6 +4437,10 @@ final class MiniHUDController {
             let p = NSPointFromString(s)
             if p != .zero { userOrigin = p }   // (0,0) == never saved
         }
+        // a demo can park its mini player somewhere else, in memory only
+        if demoScene != nil, let at = ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_AT"] {
+            userOrigin = NSPointFromString("{\(at)}")
+        }
     }
 
     private func build() {
@@ -3900,7 +4454,9 @@ final class MiniHUDController {
         p.level = .statusBar
         p.backgroundColor = .clear
         p.isOpaque = false
-        p.hasShadow = true
+        // With the edge glow on, the glow is the edge: the window shadow
+        // traced the glow's own pixels and drew a dark ring around it (11/22).
+        p.hasShadow = EdgeGlow.level == 0
         p.hidesOnDeactivate = false
         // a titleless borderless panel is anonymous in VoiceOver's window
         // list; the label names it there without drawing anything
@@ -3956,11 +4512,58 @@ final class MiniHUDController {
         UserDefaults.standard.set(NSStringFromPoint(o), forKey: "hudUserOrigin")
     }
 
+    /// The card's frame on screen (the panel minus its 18pt bloom margin), so
+    /// the full deck can grow out of it.
+    var frameValue: NSValue? {
+        guard let p = panel, isVisible else { return nil }
+        return NSValue(rect: p.frame.insetBy(dx: 18, dy: 18))
+    }
+
+    /// Put the card's top-centre at `p` (the full deck's, as it closes), and
+    /// keep that as the user's spot. Returns where the card will be.
+    /// The same with the card's top-right corner at `p` (the full deck's
+    /// collapse button, as it shrinks back: PopOutController.anchorShift).
+    func moveCard(topRight p: NSPoint, near: NSRect) -> NSRect? {
+        guard let size = cardPanelSize() else { return nil }
+        // the panel's corner is the card's plus the 18pt bloom margin
+        return moveCard(topCentre: NSPoint(x: p.x + 18 - size.width / 2, y: p.y), near: near)
+    }
+
+    private func cardPanelSize() -> NSSize? {
+        if panel == nil { build() }
+        guard let pn = panel, let h = host else { return nil }
+        let fit = h.fittingSize
+        return isVisible ? pn.frame.size : NSSize(width: max(240, fit.width), height: max(60, fit.height))
+    }
+
+    func moveCard(topCentre p: NSPoint, near: NSRect) -> NSRect? {
+        guard let size = cardPanelSize(), let pn = panel else { return nil }
+        // the panel's top is the card's top plus the 18pt bloom margin
+        let o = PopOutController.origin(topCentre: NSPoint(x: p.x, y: p.y + 18), size: size, near: near)
+        userOrigin = o
+        if demoScene == nil { UserDefaults.standard.set(NSStringFromPoint(o), forKey: "hudUserOrigin") }
+        if isVisible {
+            programmaticMove = true
+            pn.setFrameOrigin(o)
+            DispatchQueue.main.async { [weak self] in self?.programmaticMove = false }
+        }
+        return NSRect(origin: o, size: size).insetBy(dx: 18, dy: 18)
+    }
+
+    /// The full deck took over: fade out now, even under the pointer (the
+    /// click that opened it is still hovering here). Not a dismiss, so the
+    /// mini player comes back when the big one closes.
+    func standDown() {
+        hovering = false
+        lastDesired = false
+        fadeOut(force: true)
+    }
+
     func setDesiredVisible(_ visible: Bool, always: Bool = false, currentID: String?, anchor: NSStatusBarButton?) {
         // a new reply starting clears a manual dismiss — the HUD pops back up
+        // (pinned "Always" too: the X there hides it until the next reply,
+        // then it stays up again; until 11/22 a pinned panel had no X at all)
         if let id = currentID, id != dismissedID { userDismissed = false }
-        // in "always visible" mode there's no per-reply dismiss to honor
-        if always { userDismissed = false }
         if let a = anchor { lastAnchor = a }
         lastDesired = visible
         if visible && !userDismissed {
@@ -3975,14 +4578,34 @@ final class MiniHUDController {
     // is on screen (overriding a per-reply X dismiss) — the rainbow ripple
     // itself is SwiftUI, driven by Deck.attentionWanted inside MiniDeckView.
     func summonForAttention() {
+        guard SettingsStore.shared.hudVisibility != .never,
+              !PopOutController.shared.isOpen else { return }   // one player at a time
         userDismissed = false
         cancelHide()
         show(anchor: lastAnchor)
     }
 
-    // X button: hide for the current reply only. The next reply to start playing
-    // clears this (see setDesiredVisible), so the HUD comes back on its own.
+    /// Hidden by the X or "Hide until the next reply", and no reply since.
+    var isDismissed: Bool { userDismissed }
+
+    /// Opened by hand (the menu-bar icon, or the full deck's inward arrows):
+    /// it stays up, playing or not, until the X or the icon puts it away.
+    /// Kept across a relaunch.
+    private(set) var opened = UserDefaults.standard.bool(forKey: "miniOpened") && demoScene == nil {
+        didSet { if demoScene == nil { UserDefaults.standard.set(opened, forKey: "miniOpened") } }
+    }
+
+    func openByHand() { opened = true; userDismissed = false }
+
+    /// Bring it back early: a mode was picked. The next updateHUD shows it if
+    /// it's wanted.
+    func undismiss() { userDismissed = false }
+
+    // X button: put it away until the next reply. The next reply to start
+    // playing clears this (see setDesiredVisible), so it comes back on its own
+    // (unless the mode is "Only when I open it").
     func dismiss() {
+        opened = false
         userDismissed = true
         dismissedID = Deck.shared.currentID
         lastDesired = false
@@ -4010,6 +4633,7 @@ final class MiniHUDController {
         }
         p.orderFrontRegardless()
         isVisible = true
+        showGen += 1
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.18
             p.animator().alphaValue = 1
@@ -4028,22 +4652,34 @@ final class MiniHUDController {
         p.setFrame(NSRect(x: f.minX, y: f.maxY - size.height, width: size.width, height: size.height), display: true)
     }
 
+    /// Where the card is, or would be if it came up now: the full deck opens there.
+    func homeCardRect(anchor: NSStatusBarButton?) -> NSRect? {
+        if panel == nil { build() }
+        guard let p = panel, let h = host else { return nil }
+        if isVisible { return p.frame.insetBy(dx: 18, dy: 18) }
+        let fit = h.fittingSize
+        let size = NSSize(width: max(240, fit.width), height: max(60, fit.height))
+        return frameFor(size: size, anchor: anchor, current: p.frame).insetBy(dx: 18, dy: 18)
+    }
+
     private func position(_ p: NSPanel, size: NSSize, anchor: NSStatusBarButton?) {
         programmaticMove = true
         defer { DispatchQueue.main.async { [weak self] in self?.programmaticMove = false } }
+        p.setFrame(frameFor(size: size, anchor: anchor, current: p.frame), display: true)
+    }
 
+    private func frameFor(size: NSSize, anchor: NSStatusBarButton?, current: NSRect) -> NSRect {
         // dragged before → restore that spot, clamped onto a visible screen
         if let o = userOrigin {
             let screen = NSScreen.screens.first { $0.frame.contains(o) } ?? NSScreen.main
             let vf = screen?.visibleFrame ?? NSRect(origin: o, size: size)
             let x = min(max(vf.minX + 6, o.x), vf.maxX - size.width - 6)
             let y = min(max(vf.minY + 6, o.y), vf.maxY - size.height - 6)
-            p.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
-            return
+            return NSRect(x: x, y: y, width: size.width, height: size.height)
         }
         // default: centered under the menu-bar icon
         guard let button = anchor, let bwin = button.window else {
-            p.setContentSize(size); return
+            return NSRect(origin: current.origin, size: size)
         }
         // centre on the ICON, not the status item: with a queue badge the
         // item's centre sits between the number and the glyph, and it moves
@@ -4055,7 +4691,7 @@ final class MiniHUDController {
         var x = bf.midX - size.width / 2
         x = min(max(vf.minX + 6, x), vf.maxX - size.width - 6)
         let y = bf.minY - size.height - 4   // just under the menu bar
-        p.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        return NSRect(x: x, y: y, width: size.width, height: size.height)
     }
 
     private func scheduleHide() {
@@ -4070,14 +4706,17 @@ final class MiniHUDController {
     private func fadeOut(force: Bool = false) {
         guard let p = panel, isVisible else { return }
         if !force, hovering || lastDesired { return }
+        let gen = showGen
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = force ? 0.14 : 0.25
             p.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
-            guard let self else { return }
+            // a reply that started while it faded brought it back: leave it up
+            guard let self, self.showGen == gen else { return }
             if force || (!self.hovering && !self.lastDesired) {
                 p.orderOut(nil)
                 self.isVisible = false
+                self.drawerOpen = false
             }
         })
     }
@@ -4628,8 +5267,12 @@ struct UsageDial: View {
 struct ClaudeChin: View {
     @ObservedObject private var watch = ClaudeWatch.shared
     let theme: Theme
+    // The drawer's state lives with the window (PopOutController.drawerOpen),
+    // which grows DOWN by the drawer's height the moment it opens, so nothing
+    // above it moves. onDrawerHeight reports that height before it's needed.
+    @Binding var open: Bool
+    var onDrawerHeight: (CGFloat) -> Void = { _ in }
     @Environment(\.colorScheme) private var scheme
-    @State private var open = false
     @State private var rolled = false
 
     var body: some View {
@@ -4673,15 +5316,27 @@ struct ClaudeChin: View {
             .padding(.leading, 14)
             .padding(.trailing, 10)
             .padding(.vertical, 7)
+            // anywhere on the row opens the drawer, not just the dials and dots
+            .contentShape(Rectangle())
+            .onTapGesture(perform: toggle)
 
             if open {
-                details(pal)
+                ClaudeDetails(theme: theme, rolled: rolled)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 12)
-                    .transition(.opacity)
+                    .fadeInOnAppear()
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // the drawer's height, measured unseen, so the window can make room first
+        .background(alignment: .top) {
+            ClaudeDetails(theme: theme, rolled: true)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+                .fixedSize(horizontal: false, vertical: true)
+                .hidden()
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { onDrawerHeight($0) }
+        }
         .background(theme.card)
         .overlay(alignment: .top) { Rectangle().fill(theme.cardStroke).frame(height: 1) }
         .onHover { if $0 { watch.acknowledge() } }
@@ -4692,7 +5347,6 @@ struct ClaudeChin: View {
             }
         }
         .onDisappear { rolled = false; open = false }
-        .animation(.easeOut(duration: 0.2), value: open)
     }
 
     private func toggle() {
@@ -4752,6 +5406,19 @@ struct ClaudeChin: View {
             .accessibilityLabel(watch.versionWords)
         }
     }
+
+}
+
+// The drawer under the Claude numbers: usage with reset times, each service's
+// status, the Claude Code version and a check-now button. The full deck's
+// chin and the mini player's strip open the same one.
+struct ClaudeDetails: View {
+    @ObservedObject private var watch = ClaudeWatch.shared
+    let theme: Theme
+    let rolled: Bool
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View { details(ChinPalette.of(scheme)) }
 
     private func sectionLabel(_ s: String) -> some View {
         Text(s.uppercased())
@@ -4904,7 +5571,7 @@ struct ClaudeStrip: View {
         .onHover { if $0 { watch.acknowledge() } }
         .onTapGesture {
             watch.acknowledge()
-            NotificationCenter.default.post(name: .speakyOpenDeck, object: nil)
+            MiniHUDController.shared.drawerOpen.toggle()
         }
         // a press here is a click, never the start of a panel drag (a drag
         // would otherwise end in a tap and pop the deck open)
@@ -4912,7 +5579,7 @@ struct ClaudeStrip: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(stripSummary)
         .accessibilityAddTraits(.isButton)
-        .accessibilityHint("Opens the full deck with the details")
+        .accessibilityHint("Opens the Claude details below")
     }
 
     private var stripSummary: String {
@@ -4987,12 +5654,71 @@ enum HUDStyle: String, CaseIterable, Identifiable {
     static var defaultStyle: HUDStyle { glassAvailable ? .glassy : .classic }
 }
 
-// When the mini HUD appears: only while a reply is speaking (auto-hide after,
-// the default), or always on screen as a persistent little controller.
+// When the mini player comes up ON ITS OWN: with each reply (fades after,
+// the default), always, or only when you open it. Opening it by hand (the
+// menu-bar icon, or the full deck's inward arrows) works in every mode and
+// keeps it up until you put it away (see the model below).
 enum HUDVisibility: String, CaseIterable, Identifiable {
-    case whileSpeaking, always
+    case whileSpeaking, always, never   // raw values are stored prefs: keep them
     var id: String { rawValue }
-    var label: String { self == .whileSpeaking ? "Only while speaking" : "Always visible" }
+    var label: String {
+        switch self {
+        case .whileSpeaking: return "With each reply"
+        case .always: return "Always"
+        case .never: return "Only when I open it"
+        }
+    }
+}
+
+// Showing and hiding the players (Adam, 11/22: "a simple way to hide and
+// bring back the controls at any point"; then "when I hit the minimize ...
+// the thing just disappears. You need to think through all these different
+// buttons"). One player, two sizes, and every control means one thing:
+//
+//   menu-bar icon      show or hide the player, at the size you last used
+//   expand arrows      mini player -> full deck
+//   inward arrows      full deck -> mini player, always (it stays up)
+//   X / red button     put the player away until the next reply
+//   right-click        the same menu on the mini player, the full deck and
+//                      the icon: Hide until the next reply, and when the mini
+//                      player comes up on its own (With each reply / Always /
+//                      Only when I open it)
+//
+// A mini player you opened yourself (the icon or the inward arrows) stays up,
+// playing or not, until you put it away. One that came up with a reply leaves
+// when the reading's done, unless the mode is Always.
+enum PlayerVisibility {
+    static func hideUntilNextReply() {
+        MiniHUDController.shared.dismiss()
+        PopOutController.shared.fadeAndClose()   // no shrink: the mini player is hidden
+    }
+
+    static func set(_ mode: HUDVisibility) {
+        MiniHUDController.shared.undismiss()
+        SettingsStore.shared.hudVisibility = mode   // its sink redraws the mini player
+    }
+
+    /// The last size the player was used at: the menu-bar icon reopens it so.
+    static var lastWasFull: Bool = UserDefaults.standard.string(forKey: "lastPlayer") == "full" {
+        didSet { if demoScene == nil { UserDefaults.standard.set(lastWasFull ? "full" : "mini", forKey: "lastPlayer") } }
+    }
+}
+
+// The shared menu as SwiftUI, for the mini player's and the full deck's
+// right-click. The menu-bar icon builds the same items in AppKit (showMenu).
+struct PlayerVisibilityMenu: View {
+    @ObservedObject var settings = SettingsStore.shared
+
+    var body: some View {
+        Button("Hide until the next reply") { PlayerVisibility.hideUntilNextReply() }
+        Divider()
+        Picker("Mini player comes up", selection: Binding(
+            get: { settings.hudVisibility },
+            set: { PlayerVisibility.set($0) })) {
+            ForEach(HUDVisibility.allCases) { Text($0.label).tag($0) }
+        }
+        .pickerStyle(.inline)
+    }
 }
 
 // When speech happens. Until 2026-08-22 the only trigger was the Stop hook, so
@@ -5065,7 +5791,7 @@ final class SettingsStore: ObservableObject {
         }
     }
     @Published var hudStyle: HUDStyle = .glassy { didSet { guard !loading else { return }; UserDefaults.standard.set(hudStyle.rawValue, forKey: "hudStyle") } }
-    @Published var hudVisibility: HUDVisibility = .whileSpeaking { didSet { guard !loading else { return }; UserDefaults.standard.set(hudVisibility.rawValue, forKey: "hudVisibility") } }
+    @Published var hudVisibility: HUDVisibility = .whileSpeaking { didSet { guard !loading, demoScene == nil else { return }; UserDefaults.standard.set(hudVisibility.rawValue, forKey: "hudVisibility") } }
     // Claude usage, status and version along the bottom of the deck. Off by
     // default: it reads the user's Claude Code sign-in (see ClaudeWatch).
     @Published var claudeChin: Bool = false {
@@ -5073,6 +5799,18 @@ final class SettingsStore: ObservableObject {
             guard !loading else { return }
             UserDefaults.standard.set(claudeChin, forKey: "claudeChin")
             ClaudeWatch.shared.setEnabled(claudeChin)
+        }
+    }
+
+    // Pause a speaking reply while another app has the microphone on
+    // (MicWatch, Deck.micChanged). On by default: talking over your own
+    // dictation is never what you want.
+    @Published var pauseForMic: Bool = true {
+        didSet {
+            guard !loading, demoScene == nil else { return }
+            UserDefaults.standard.set(pauseForMic, forKey: "pauseForMic")
+            if !pauseForMic, Deck.shared.micBusy { Deck.shared.micChanged(false) }
+            if pauseForMic, MicWatch.shared.busy { Deck.shared.micChanged(true) }
         }
     }
 
@@ -5114,6 +5852,7 @@ final class SettingsStore: ObservableObject {
                 : storedHUD == "liquidGlass" ? .glassy : HUDStyle.defaultStyle)
         hudVisibility = UserDefaults.standard.string(forKey: "hudVisibility").flatMap(HUDVisibility.init) ?? .whileSpeaking
         claudeChin = UserDefaults.standard.bool(forKey: "claudeChin")
+        pauseForMic = UserDefaults.standard.object(forKey: "pauseForMic") as? Bool ?? true
         loading = false
         // screenshots need the opaque surface: glass bakes whatever desktop was
         // behind it into the capture (didSet is inert while loading, no persist)
@@ -5537,6 +6276,9 @@ struct SettingsView: View {
                 }
                 Toggle("Say the session name first", isOn: $settings.nameFirst)
                     .accessibilityHint("Each reply opens with its session name, so you can tell which project is talking.")
+                Toggle("Pause while you dictate", isOn: $settings.pauseForMic)
+                    .help("A reply pauses while another app has the microphone on (MacWhisper, Apple dictation, a call), and carries on when it goes off.")
+                    .accessibilityHint("A reply pauses while another app has the microphone on, and carries on when it goes off.")
                 Toggle("Read scripted runs too (claude -p)", isOn: $settings.readHeadless)
                     .help("Off: runs started by scripts, scheduled jobs or apps with claude -p or the Agent SDK stay silent. Turn on if an app you chat in runs Claude that way.")
                     .accessibilityHint("Off keeps claude -p and Agent SDK runs silent. Turn on if an app you chat in runs Claude that way.")
@@ -5574,7 +6316,7 @@ struct SettingsView: View {
                             .accessibilityLabel("Reset accent colour to the default")
                     }
                 }
-                Picker("Show mini player", selection: $settings.hudVisibility) {
+                Picker("Mini player comes up", selection: $settings.hudVisibility) {
                     ForEach(HUDVisibility.allCases) { Text($0.label).tag($0) }
                 }
             }
@@ -6199,18 +6941,525 @@ func fallbackSyGlyph(_ barH: CGFloat) -> NSImage {
     return img
 }
 
+// The card the mini player grows through on its way to the full deck.
+struct MorphCard: View {
+    let pad: CGFloat
+    @Environment(\.colorScheme) private var scheme
+    var body: some View {
+        let theme = Theme.of(scheme)
+        RoundedRectangle(cornerRadius: 15, style: .continuous)
+            .fill(theme.bg)
+            .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .strokeBorder(theme.cardStroke, lineWidth: 1))
+            .shadow(color: .black.opacity(0.22), radius: 16, y: 8)
+            .padding(pad)
+    }
+}
+
+// MARK: - The full deck (its window)
+//
+// The full deck is a window of its own: drag it anywhere, resize it, and it
+// stays open until you close it (Adam, 2026-11-22: "turn the mini window into a
+// big popout player ... so i can resize it and drag it around and keep it
+// open"). Opened from the expand button on the mini player or a left-click on
+// the menu-bar icon (which also closes it). While it is open the mini player
+// stands down: one player on screen at a time. Its size is remembered (frame
+// autosave), and so is being open: an update or relaunch brings it back. It
+// floats above other windows and follows you to every Space, like the mini
+// player. (A pin to make it an ordinary window was tried on 11/22 and dropped
+// the same day: the change was invisible from inside the window, so the pin
+// looked like it did nothing.)
+// MARK: - Edge glow (an experiment, Adam 11/22: "experiment with a little bit
+// of glowing outline, emanating off the perimeter of the full size and mini
+// size windows"). A blurred accent stroke on the outline, half of it hidden
+// under the player, so a soft halo leaks out past the edge. Level 0 off, 1
+// soft, 2 strong (the default: Adam picked C from the A/B/C sheet, 11/22);
+// pref "edgeGlow", SPEAKYSPEAK_DEMO_GLOW in demos.
+struct EdgeGlow: View {
+    static var level: Int {
+        if demoScene != nil, let v = ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_GLOW"] { return Int(v) ?? 0 }
+        // Adam picked C, strong (11/22); the pref can still turn it down or off
+        return UserDefaults.standard.object(forKey: "edgeGlow") as? Int ?? 2
+    }
+    let level: Int
+    let cornerRadius: CGFloat
+    var scale: CGFloat = 1   // the full deck is bigger and sits on a system shadow: more halo
+    var body: some View {
+        if level > 0 {
+            let strong = level >= 2
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(Theme.accent.opacity(strong ? 0.9 : 0.6), lineWidth: (strong ? 5 : 4) * scale)
+                    // kept inside the mini player's 18pt margin, or the
+                    // panel's edge cuts the halo off square
+                    .blur(radius: (strong ? 8 : 6) * scale)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(Theme.accent.opacity(strong ? 0.5 : 0.3), lineWidth: 1)
+                    .blur(radius: 1)
+            }
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+// The full deck is a real window, which can't draw past its own edge, so its
+// glow is a click-through child window just behind it, a margin bigger all
+// round, that moves and resizes with it.
+//
+// It must never be kept on screen by AppKit: with the deck pushed up under
+// the menu bar, the glow's top margin would cross it, AppKit moved the whole
+// glow down 40pt to fit, and it hung below the chin (Adam's screenshot, 11/22;
+// the live windows read deck y -1698, glow y -1698 instead of -1738).
+private final class GlowPanel: NSPanel {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}
+
+final class WindowGlow {
+    private var panel: GlowPanel?
+    private static let pad: CGFloat = 40
+    private static let radius: CGFloat = 16   // a titled window's corner on macOS 26 and later
+
+    func attach(to w: NSWindow) {
+        guard EdgeGlow.level > 0 else { detach(); return }
+        if panel == nil {
+            let p = GlowPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                              backing: .buffered, defer: false)
+            p.isOpaque = false
+            p.backgroundColor = .clear
+            p.hasShadow = false
+            p.ignoresMouseEvents = true
+            p.setAccessibilityElement(false)   // decoration: VoiceOver shouldn't list it as a window
+            p.setAccessibilityHidden(true)
+            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+            let h = NSHostingView(rootView: EdgeGlow(level: EdgeGlow.level, cornerRadius: Self.radius, scale: 1.8)
+                                    .padding(Self.pad))
+            h.sizingOptions = []
+            p.contentView = h
+            panel = p
+        }
+        guard let p = panel else { return }
+        // The glow is the edge, as on the mini player: the window's own
+        // shadow, heavier at the bottom, darkened the halo along the chin so
+        // it seemed to hang low there (Adam, 11/22: "the glow extends a
+        // little bit too low at the chin").
+        w.hasShadow = false
+        follow(w)
+        if p.parent !== w { p.parent?.removeChildWindow(p); w.addChildWindow(p, ordered: .below) }
+        p.orderFront(nil)
+        w.order(.above, relativeTo: p.windowNumber)
+    }
+
+    func follow(_ w: NSWindow) {
+        panel?.setFrame(w.frame.insetBy(dx: -Self.pad, dy: -Self.pad), display: true)
+        panel?.alphaValue = w.alphaValue
+    }
+
+    func detach() {
+        guard let p = panel else { return }
+        p.parent?.hasShadow = true
+        p.parent?.removeChildWindow(p)
+        p.orderOut(nil)
+    }
+}
+
+final class PopOutController: NSObject, ObservableObject, NSWindowDelegate {
+    static let shared = PopOutController()
+
+    private(set) var window: NSWindow?
+    var onChange: () -> Void = {}
+    var isOpen: Bool { window?.isVisible ?? false }
+
+    // The Claude drawer at the bottom. It opens DOWNWARD (Adam, 11/22: "when
+    // usage is clicked i'd rather it expand down rather than pull up"): the
+    // window's bottom edge moves down by the drawer's height and the top stays
+    // put, so the list above keeps its size. ClaudeChin reports the height.
+    @Published var drawerOpen = false {
+        didSet { if drawerOpen != oldValue { resizeForDrawer(open: drawerOpen, animate: false) } }
+    }
+    var drawerHeight: CGFloat = 0
+    // what opening actually added, so closing takes away exactly that. Taking
+    // away the CURRENT measurement drifted: the drawer is measured again when
+    // Claude's numbers arrive or an incident appears, and each open/close pair
+    // could shrink the window a little more, until the deck no longer fitted
+    // and its header slid under the traffic lights (Adam's screenshot, 11/22:
+    // the saved frame had gone from 660 to 320 points tall).
+    private var drawerAdded: CGFloat = 0
+
+    private var generation = 0   // bumped by every open and close: a late grow step must not undo a close
+    private static let openKey = "popOutOpen"
+    private static let frameName = "SpeakySpeakPopOut"
+
+    private override init() { super.init() }
+
+    private func resizeForDrawer(open: Bool, animate: Bool) {
+        guard let w = window, w.isVisible else { return }
+        if open && drawerHeight <= 0 { return }
+        var f = w.frame
+        let dh = open ? drawerHeight : -drawerAdded
+        f.size.height += dh
+        f.origin.y -= dh   // the top edge stays where it is
+        let target = fitted(f, in: w)
+        drawerAdded = open ? max(0, target.height - w.frame.height) : 0   // less when the screen ran out
+        w.setFrame(target, display: true, animate: animate)
+    }
+
+    // A frame the deck fits in: never shorter or narrower than the content's
+    // minimum (a frame set in code skips AppKit's own minimum, and a deck
+    // squeezed below it overflows: the header rides up under the traffic
+    // lights and the bottom is cut off), top edge kept, kept on its screen.
+    private func fitted(_ frame: NSRect, in w: NSWindow) -> NSRect {
+        var f = frame
+        let minFrame = w.frameRect(forContentRect: NSRect(origin: .zero, size: w.contentMinSize))
+        if f.width < minFrame.width { f.size.width = minFrame.width }
+        if f.height < minFrame.height {
+            f.origin.y -= minFrame.height - f.height
+            f.size.height = minFrame.height
+        }
+        // no room below: the window moves up just enough to fit
+        if let vf = (w.screen ?? NSScreen.main)?.visibleFrame, f.minY < vf.minY {
+            f.origin.y = vf.minY
+            f.size.height = min(f.height, vf.height)
+        }
+        return f
+    }
+
+    private func build() -> Bool {
+        let host = NSHostingController(rootView: DeckView(poppedOut: true))
+        host.sizingOptions = [.minSize]   // the window can't shrink past what the deck needs
+        host.view.setAccessibilityLabel("The full deck")
+        let w = NSWindow(contentViewController: host)
+        w.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
+        w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden
+        w.title = "SpeakySpeak"
+        // No traffic lights (Adam, 11/22: "It would be better if the top of
+        // the app just went to the very top, and we got rid of those. much
+        // simpler"). The inward arrows and the menu-bar icon close it; the
+        // window stays .titled and .closable underneath, so it keeps its
+        // rounded corners and resizes. ⌘W is in the key monitor: with no main
+        // menu nothing else answers it.
+        for b in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            w.standardWindowButton(b)?.isHidden = true
+        }
+        w.isReleasedWhenClosed = false
+        w.delegate = self
+        w.level = .floating
+        w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window = w
+        w.setContentSize(NSSize(width: 400, height: 640))
+        // true = a size and place from last time came back
+        // a demo instance shares the live app's defaults: it must not move the real window
+        guard demoScene == nil else { return false }
+        let restored = w.setFrameUsingName(Self.frameName)
+        _ = w.setFrameAutosaveName(Self.frameName)
+        return restored
+    }
+
+    /// Open (or bring forward). It grows out of `source` (the mini player's
+    /// card, or the menu-bar icon) and opens with its top edge and centre line
+    /// on `home` (where the mini player is, or would be).
+    /// `quietly`: on screen without activating the app (a relaunch while you type).
+    func open(from source: NSRect? = nil, at home: NSRect? = nil, quietly: Bool = false) {
+        var placed = true
+        if window == nil { placed = build() }
+        guard let w = window else { return }
+        let wasOpen = w.isVisible
+        // Grow in place (Adam, 11/22: "make it do it in the same spot, not jump
+        // to its old spot"), anchored on the size button (Adam, 11/22 later:
+        // "whenever it grows or shrinks, it could let that icon be the anchor
+        // point"): the window keeps its size but opens with its collapse
+        // button exactly where the mini player's expand button was, so it
+        // grows left and down from under the pointer, and the shrink comes
+        // back up and right into the same spot (windowShouldClose). Clicking
+        // the button again and again never moves it.
+        if let r = home ?? source, !wasOpen {
+            w.setFrameOrigin(Self.origin(topRight: NSPoint(x: r.maxX + Self.anchorShift.x,
+                                                           y: r.maxY + Self.anchorShift.y),
+                                         size: w.frame.size, near: r))
+        } else if !placed {
+            w.center()
+        }
+        // a saved frame from the drifting build may be too small for the deck
+        if !wasOpen { w.setFrame(fitted(w.frame, in: w), display: false) }
+        generation += 1
+        if !quietly { NSApp.activate(ignoringOtherApps: true) }   // so sliders and the scrubber take clicks
+        if let src = source, !wasOpen, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            grow(w, from: src)
+        } else {
+            w.alphaValue = 1
+            if quietly { w.orderFrontRegardless() } else { w.makeKeyAndOrderFront(nil) }
+            glow.attach(to: w)
+        }
+        if demoScene == nil { UserDefaults.standard.set(true, forKey: Self.openKey) }
+        PlayerVisibility.lastWasFull = true
+        ClaudeWatch.shared.refreshIfStale()
+        onChange()
+    }
+
+    /// The red button's meaning: put the player away until the next reply.
+    func close() { requestClose() }
+
+    // performClose's meaning without its button: with the close button hidden,
+    // whether it refuses depends on the macOS version.
+    private func requestClose() {
+        guard let w = window, w.isVisible, windowShouldClose(w) else { return }
+        w.close()
+    }
+
+    /// The inward arrows: back to the mini player, which always comes up.
+    func collapseToMini() {
+        guard isOpen else { return }
+        MiniHUDController.shared.openByHand()
+        PlayerVisibility.lastWasFull = false
+        collapsing = true
+        requestClose()
+        collapsing = false
+    }
+
+    /// "Hide until the next reply" with the deck open: a quick fade instead
+    /// of the shrink, since there is no mini player to shrink into.
+    func fadeAndClose() {
+        guard let w = window, w.isVisible else { return }
+        generation += 1
+        glow.detach()
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.15
+            w.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            self?.requestClose()   // windowShouldClose: the mini player won't show, so it just closes
+            w.alphaValue = 1
+        })
+    }
+    // demo "tiny": squeeze the window in code (as the old drawer drift did),
+    // then reopen and toggle the drawer; deck.log shows each frame
+    func demoTiny() {
+        guard let w = window else { return }
+        let log = { (what: String) in dlog("demo tiny \(what): \(NSStringFromRect(w.frame)) min \(NSStringFromSize(w.contentMinSize))") }
+        w.setFrame(NSRect(x: w.frame.minX, y: w.frame.maxY - 320, width: 345, height: 320), display: true)
+        log("squeezed")
+        close()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.open(); log("reopened")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                self?.drawerHeight = 150; self?.drawerOpen = true; log("drawer open")
+                self?.drawerHeight = 190   // measured again while open
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    self?.drawerOpen = false; log("drawer closed")
+                }
+            }
+        }
+    }
+    func demoNudge(dx: CGFloat) {
+        guard let w = window else { return }
+        w.setFrameOrigin(NSPoint(x: w.frame.minX + dx, y: w.frame.minY))
+    }
+
+    /// Bottom-left origin for a frame of `size` whose top-centre sits at `p`,
+    /// clamped onto the visible part of the screen `near` is on.
+    /// The deck's top-right corner minus the mini player's card's, so the
+    /// collapse button lands on the expand button: the mini's expand sits
+    /// 24pt in and 19pt down from its card's corner (16pt padding plus half
+    /// its 16pt frame; 11pt plus 8), the deck's collapse 26 and 22 (14pt
+    /// padding plus half of 24; 12pt plus half of 20). Measured, not just
+    /// computed: demo scene "anchor" logs both buttons' screen spots.
+    static let anchorShift = NSPoint(x: 2, y: 3)
+
+    /// Bottom-left origin for a frame of `size` whose top-right corner sits at
+    /// `p`, clamped onto the visible part of the screen `near` is on.
+    static func origin(topRight p: NSPoint, size: NSSize, near: NSRect) -> NSPoint {
+        origin(topCentre: NSPoint(x: p.x - size.width / 2, y: p.y), size: size, near: near)
+    }
+
+    static func origin(topCentre p: NSPoint, size: NSSize, near: NSRect) -> NSPoint {
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(p) })
+            ?? NSScreen.screens.first(where: { $0.frame.intersects(near) }) ?? NSScreen.main
+        var x = p.x - size.width / 2, y = p.y - size.height
+        if let vf = screen?.visibleFrame {
+            x = min(max(vf.minX + 6, x), vf.maxX - size.width - 6)
+            y = max(vf.minY + 6, min(y, vf.maxY - size.height))
+        }
+        return NSPoint(x: x, y: y)
+    }
+
+    // The grow (Adam, 2026-11-22: "make the miniplayer smoothly grow into the
+    // full-size player"). A plain card the colour of the deck starts on the
+    // mini player's card and grows to the window's frame while the mini player
+    // fades out under it; then the real window fades in on top and the card
+    // goes. The card is drawn, not a snapshot: the glass mini player can't be
+    // captured from inside the app, and laying the real deck out at every
+    // in-between size would squash it below its 340pt minimum. Reduce Motion
+    // skips it (open() shows the window directly).
+    private var morph: NSPanel?
+    private static let morphPad: CGFloat = 40   // room for the card's shadow inside its panel
+
+    // The card, on screen at `rect` (card coordinates), invisible until faded in.
+    private func makeMorph(at rect: NSRect) -> NSPanel {
+        morph?.orderOut(nil)
+        let pad = Self.morphPad
+        let p = NSPanel(contentRect: rect.insetBy(dx: -pad, dy: -pad),
+                        styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = false
+        p.ignoresMouseEvents = true
+        p.level = .statusBar   // above the mini player, which it grows out of
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        let h = NSHostingView(rootView: MorphCard(pad: pad))
+        h.sizingOptions = []   // the animation sets the size, not the view
+        p.contentView = h
+        p.setFrame(rect.insetBy(dx: -pad, dy: -pad), display: true)
+        p.alphaValue = 0
+        p.orderFrontRegardless()
+        morph = p
+        return p
+    }
+
+    private func grow(_ w: NSWindow, from src: NSRect) {
+        let pad = Self.morphPad
+        let end = w.frame
+        // never fly across displays (a window can't straddle two when each has
+        // its own Spaces): start from a mini-player-sized card at the spot
+        var src = src
+        let scr = { (r: NSRect) in NSScreen.screens.first { $0.frame.contains(NSPoint(x: r.midX, y: r.maxY - 1)) } }
+        if let a = scr(src), let b = scr(end), a != b {
+            src = NSRect(x: end.maxX - Self.anchorShift.x - 264, y: end.maxY - Self.anchorShift.y - 60, width: 264, height: 60)
+        }
+        let p = makeMorph(at: src)
+        w.alphaValue = 0
+        w.makeKeyAndOrderFront(nil)
+        // the card dissolves in over the mini player's last moment on screen
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.1
+            p.animator().alphaValue = 1
+        }
+        // A gentle ease-in-out so the growth fills the whole time; a steep
+        // ease-out did nearly all of it in the first tenth of a second and then
+        // sat as a blank card (recorded 11/22).
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.32
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.32, 0.72, 0.2, 1)
+            p.animator().setFrame(end.insetBy(dx: -pad, dy: -pad), display: true)
+        }, completionHandler: { [weak self] in
+            p.orderOut(nil)
+            if self?.morph === p { self?.morph = nil }
+        })
+        // The hand-off starts in the curve's last few points of travel, so the
+        // blank card never sits still (it held for ~0.13 s when this waited for
+        // the end, recorded 11/22). The window goes fully opaque UNDER the card,
+        // then the card fades off it: fading both at once left both
+        // half-transparent and the desktop showed through the player.
+        let gen = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self, self.generation == gen, w.isVisible else { p.alphaValue = 0; return }
+            w.alphaValue = 1
+            self.glow.attach(to: w)
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.16
+                p.animator().alphaValue = 0
+            }
+        }
+    }
+
+    // The shrink, the grow run backwards: the card covers the window, shrinks
+    // onto the mini player's card, and the mini player fades in on top of it.
+    // The mini player moves to the window's spot first (same top-centre
+    // anchor as the grow), so nothing jumps. Every close arrives here: the
+    // inward arrows (collapsing) shrink into the mini player; the red button,
+    // the icon and "Hide until the next reply" put the player away. Until
+    // 11/22 evening both shrank, but only into a mini player that "would be
+    // up", so with nothing playing the arrows made everything vanish (Adam).
+    private var closingForReal = false
+    private var collapsing = false
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if closingForReal { return true }
+        let f = sender.frame
+        let card = MiniHUDController.shared.moveCard(topRight: NSPoint(x: f.maxX - Self.anchorShift.x,
+                                                                        y: f.maxY - Self.anchorShift.y), near: f)
+        guard collapsing else {
+            MiniHUDController.shared.dismiss()   // nothing pops up as the deck goes
+            return true
+        }
+        guard let target = card,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return true }
+        shrinkThenClose(sender, to: target)
+        return false
+    }
+
+    private func shrinkThenClose(_ w: NSWindow, to target: NSRect) {
+        generation += 1
+        glow.detach()
+        let pad = Self.morphPad
+        let p = makeMorph(at: w.frame)
+        // the card covers the window first, so the window can go without a flash
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.08
+            p.animator().alphaValue = 1
+        }, completionHandler: { [weak self] in
+            w.alphaValue = 0
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.3
+                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.32, 0.72, 0.2, 1)
+                p.animator().setFrame(target.insetBy(dx: -pad, dy: -pad), display: true)
+            }
+            // The mini player starts fading in on top while the card is in its
+            // last few points of travel; waiting for the end left a blank card
+            // sitting there for ~0.2 s, and 0.2 s in still left ~0.1 s (both
+            // recorded 11/22). Then the card lifts.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                guard let self else { return }
+                self.closingForReal = true
+                w.close()
+                self.closingForReal = false
+                w.alphaValue = 1
+                self.onChange()   // the mini player comes up, above the card
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+                    NSAnimationContext.runAnimationGroup({ ctx in
+                        ctx.duration = 0.12
+                        p.animator().alphaValue = 0
+                    }, completionHandler: { [weak self] in
+                        p.orderOut(nil)
+                        if self?.morph === p { self?.morph = nil }
+                    })
+                }
+            }
+        })
+    }
+
+    let glow = WindowGlow()
+    func windowDidMove(_ notification: Notification) { if let w = window { glow.follow(w) } }
+    func windowDidResize(_ notification: Notification) { if let w = window { glow.follow(w) } }
+
+    func windowWillClose(_ notification: Notification) {
+        generation += 1
+        glow.detach()
+        // close with the drawer folded, so the window comes back at its own size
+        if drawerOpen { drawerOpen = false }   // didSet folds it, by what it added
+        if demoScene == nil { UserDefaults.standard.set(false, forKey: Self.openKey) }
+        ClaudeWatch.shared.freshSeen()
+        // isVisible is still true inside willClose; ask once it has gone
+        DispatchQueue.main.async { [weak self] in self?.onChange() }
+    }
+
+    /// Open at launch if it was open when the app last quit.
+    func restoreIfWasOpen() {
+        if UserDefaults.standard.bool(forKey: Self.openKey) { open(quietly: true) }
+    }
+
+}
+
 // MARK: - App shell (accessory app, menu-bar deck)
 //
-// The deck lives behind a menu-bar icon instead of floating over everything:
-// left-click drops the panel down as a transient popover (dismisses when you
-// click away), right-click (or ctrl-click) shows a small Mute/Quit menu. The
+// The app lives behind a menu-bar icon: left-click opens or closes the full
+// deck (a window, see PopOutController), right-click (or ctrl-click) shows a
+// small Mute / Settings / Quit menu. The
 // icon itself reflects state: the Sy, orange with bars moving over it while
 // speaking, crossed out when silenced, with an orange dot when replies wait
 // behind a silenced mark (statusImage).
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private let popover = NSPopover()
     private var pulseTimer: Timer?
     private var pulsePhase: CGFloat = 0
     private var bag = Set<AnyCancellable>()
@@ -6232,22 +7481,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        if demoScene == nil { MicWatch.shared.start() }
+        if demoScene != nil, ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_DARK"] == "1" {
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+        // ⌘Z / ⇧⌘Z undo and redo the deck's removals (Deck.removeByHand). An
+        // accessory app has no Edit menu to carry them, so a key monitor does;
+        // a text field that has the keyboard keeps its own undo.
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            let mods = e.modifierFlags.intersection([.command, .shift, .option, .control])
+            // no main menu, so nothing else answers ⌘W
+            if e.charactersIgnoringModifiers?.lowercased() == "w", mods == .command, let w = e.window {
+                if w === PopOutController.shared.window { PopOutController.shared.close(); return nil }
+                if w.styleMask.contains(.closable) { w.performClose(nil); return nil }
+                return e
+            }
+            guard e.charactersIgnoringModifiers?.lowercased() == "z",
+                  mods == .command || mods == [.command, .shift],
+                  !(e.window?.firstResponder is NSText) else { return e }
+            let d = Deck.shared
+            if mods.contains(.shift) {
+                guard d.undoer.canRedo else { return e }
+                d.redo()
+            } else {
+                guard d.undoer.canUndo else { NSSound.beep(); return nil }
+                d.undo()
+            }
+            return nil
+        }
         // Opened by the user after a Quit: replies speak again (quitForGood)
         if demoScene == nil, FileManager.default.fileExists(atPath: speakQuitURL.path) {
             try? FileManager.default.removeItem(at: speakQuitURL)
             dlog("opened after a quit: replies speak again")
         }
-
-        popover.behavior = .transient
-        popover.animates = true
-        popover.delegate = self   // hide the compact HUD while the full deck is open
-        let host = NSHostingController(rootView: DeckView())
-        host.sizingOptions = [.preferredContentSize]   // popover tracks the deck's size
-        // names the popover for VoiceOver on the AppKit side — a SwiftUI
-        // .contain container would add a group boundary VO users must step
-        // into before reaching any control; this adds none
-        host.view.setAccessibilityLabel("The full deck")
-        popover.contentViewController = host
 
         NotificationCenter.default.addObserver(
             forName: .speakyAccentChanged, object: nil, queue: .main) { [weak self] _ in
@@ -6259,9 +7525,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         NotificationCenter.default.addObserver(
             forName: .speakyOpenDeck, object: nil, queue: .main) { [weak self] _ in
-            guard let self, !self.popover.isShown, let b = self.statusItem?.button else { return }
-            self.togglePopover(b)
+            self?.openDeck()
         }
+        // the expand button on the mini player
+        NotificationCenter.default.addObserver(
+            forName: .speakyPopOut, object: nil, queue: .main) { [weak self] _ in
+            self?.openDeck()
+        }
+        PopOutController.shared.onChange = { [weak self] in self?.updateHUD() }
         // the icon is no longer a template, so nothing re-tints it for us
         DistributedNotificationCenter.default.addObserver(
             forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
@@ -6314,7 +7585,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         Deck.shared.start()
         refreshStatus()
         if demoScene == nil { Updater.shared.start() }
-        if demoScene == nil && SettingsStore.shared.claudeChin { ClaudeWatch.shared.setEnabled(true) }
+        if (demoScene == nil || demoChin) && SettingsStore.shared.claudeChin { ClaudeWatch.shared.setEnabled(true) }
         // the mini player's strip comes and goes with the setting: resize the panel to fit
         SettingsStore.shared.$claudeChin.dropFirst().removeDuplicates()
             .receive(on: DispatchQueue.main)
@@ -6347,6 +7618,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         .merge(with: deck.$currentID.removeDuplicates().map { _ in () })
         // the chime gap ending without a next reply lets the mini player go
         .merge(with: deck.$advancePending.removeDuplicates().map { _ in () })
+        // a reply waiting for the microphone says so in the tooltip
+        .merge(with: deck.$micWaiting.removeDuplicates().map { _ in () })
+        .merge(with: deck.$micHolders.removeDuplicates().map { _ in () })
         // …and the ↑ update hint the moment the daily check finds one
         .merge(with: Updater.shared.$availableVersion.removeDuplicates().map { _ in () })
         .receive(on: DispatchQueue.main)
@@ -6359,10 +7633,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         // Switching the menu-bar icon style (Sy mark ↔ speaker) repaints it.
 
-        // Toggling "Always visible" ↔ "Only while speaking" shows/hides the HUD now.
+        // A new "Mini player comes up" choice (Settings or the menu) shows
+        // or hides it now, and counts as bringing a hidden one back.
         SettingsStore.shared.$hudVisibility
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.updateHUD() }
+            .sink { [weak self] _ in MiniHUDController.shared.undismiss(); self?.updateHUD() }
             .store(in: &bag)
 
         // A demo instance runs beside the live deck: it must not steal the
@@ -6372,23 +7647,261 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             NowPlayingBridge.shared.setup()
             PeerGate.shared.start()
             PhoneLink.shared.start()
+            PopOutController.shared.restoreIfWasOpen()
         }
         updateHUD()
 
-        // Demo scenes stage the window to capture: "deck" pins the popover
-        // open (applicationDefined so a screenshot pass can't dismiss it);
+        if demoScene != nil, let m = ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_MODE"].flatMap(HUDVisibility.init) {
+            SettingsStore.shared.hudVisibility = m   // in memory only: demo instances don't write it
+            updateHUD()
+        }
+        // Demo scenes stage the window to capture: "deck" opens the full deck;
         // "hud" leaves the mini player up on its own.
+        if let m = ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_MIC"], demoScene != nil { deck.demoMicWait(m) }
         if demoScene == "deck" {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
-                guard let button = statusItem?.button else { return }
-                popover.behavior = .applicationDefined
-                popover.show(relativeTo: button.glyphRect, of: button, preferredEdge: .minY)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                let po = PopOutController.shared
+                po.open()
+                // SPEAKYSPEAK_DEMO_SIZE=400x560: the window's size, for the site's figures
+                let wh = (ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_SIZE"] ?? "")
+                    .split(separator: "x").compactMap { Double($0) }
+                if wh.count == 2, let w = po.window {
+                    w.setContentSize(NSSize(width: wh[0], height: wh[1]))
+                    po.glow.follow(w)
+                }
             }
         }
         if demoScene == "settings" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 SettingsWindowController.shared.show()
             }
+        }
+        if demoScene == "grow" || demoScene == "roundtrip" {   // the mini player, then the grow into the full deck
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                NotificationCenter.default.post(name: .speakyPopOut,
+                                                object: MiniHUDController.shared.frameValue)
+            }
+        }
+        if demoScene == "glow" {   // the full deck at its narrowest, for the glow and title stills
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                let po = PopOutController.shared
+                po.open()
+                if let w = po.window {
+                    w.setContentSize(NSSize(width: 340, height: 520))
+                    w.setFrameOrigin(NSPoint(x: 730, y: 300))   // the built-in display, for the stills
+                    po.glow.follow(w)
+                }
+                // SPEAKYSPEAK_DEMO_DRAWER=1: open and close the drawer, then the glow must still fit
+                // SPEAKYSPEAK_DEMO_TOP=1: the deck right under the menu bar, where the glow got pushed down
+                if ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_TOP"] == "1", let w = po.window,
+                   let vf = w.screen?.visibleFrame {
+                    w.setFrameOrigin(NSPoint(x: 730, y: vf.maxY - w.frame.height))
+                }
+                if ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_DRAWER"] == "1" {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { po.drawerHeight = 150; po.drawerOpen = true }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { po.drawerOpen = false }
+                }
+            }
+        }
+        if demoScene == "sizes" {   // expand and collapse twice: the size button should never move
+            let po = PopOutController.shared
+            for t in [2.0, 6.0] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) {
+                    NotificationCenter.default.post(name: .speakyPopOut, object: MiniHUDController.shared.frameValue)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + t + 2.0) { po.collapseToMini() }
+            }
+            for t in [1.5, 3.5, 5.5] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) {
+                    dlog("demo sizes mini card \(NSStringFromRect(MiniHUDController.shared.frameValue?.rectValue ?? .zero)) deck \(po.isOpen ? NSStringFromRect(po.window?.frame ?? .zero) : "closed")")
+                }
+            }
+        }
+        if demoScene == "drawer" {   // the mini's drawer, then the full deck's (needs SPEAKYSPEAK_DEMO_CHIN=1)
+            let m = MiniHUDController.shared, po = PopOutController.shared
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { m.drawerOpen = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { m.drawerOpen = false }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) {
+                NotificationCenter.default.post(name: .speakyPopOut, object: nil)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) { po.drawerOpen = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 7.5) { po.drawerOpen = false }
+        }
+        if demoScene == "tiny" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { PopOutController.shared.open() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { PopOutController.shared.demoTiny() }
+        }
+        if demoScene == "otherdisplay" {   // the icon clicked on the display without the mini player
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                let mini = MiniHUDController.shared.frameValue?.rectValue ?? .zero
+                guard let other = NSScreen.screens.first(where: {
+                    !$0.frame.contains(NSPoint(x: mini.midX, y: mini.midY)) }) else { return }
+                self?.openDeck(clickedAt: NSPoint(x: other.frame.midX, y: other.frame.maxY - 12))
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { PopOutController.shared.collapseToMini() }
+        }
+        if demoScene == "roundtrip" {   // …then moved 240pt left and closed: the shrink lands there
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                PopOutController.shared.demoNudge(dx: -240)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { PopOutController.shared.collapseToMini() }
+        }
+        if demoScene == "popout" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { PopOutController.shared.open() }
+            // who would take a click along the header row (in the old title bar)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                guard let w = PopOutController.shared.window, let frame = w.contentView?.superview else { return }
+                for x in stride(from: 20.0, to: w.frame.width, by: 40) {
+                    let pt = NSPoint(x: x, y: w.frame.height - 24)
+                    let hit = frame.hitTest(pt)
+                    dlog("demo popout hit x \(Int(x)): \(hit.map { String(describing: type(of: $0)) } ?? "nil")")
+                }
+            }
+            // drag the header 100pt left and 50pt up with events sent to the window
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                guard let w = PopOutController.shared.window else { return }
+                let start = NSPoint(x: w.frame.minX + 200, y: w.frame.maxY - 14)   // screen
+                func send(_ t: NSEvent.EventType, _ screen: NSPoint) {
+                    let loc = w.convertPoint(fromScreen: screen)
+                    if let e = NSEvent.mouseEvent(with: t, location: loc, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                  windowNumber: w.windowNumber, context: nil, eventNumber: 0,
+                                                  clickCount: 1, pressure: t == .leftMouseUp ? 0 : 1) { NSApp.sendEvent(e) }
+                }
+                // one event per tick, as a real hand sends them
+                send(.leftMouseDown, start)
+                for i in 1...10 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.03 * Double(i)) {
+                        send(.leftMouseDragged, NSPoint(x: start.x - CGFloat(i * 10), y: start.y + CGFloat(i * 5)))
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    send(.leftMouseUp, NSPoint(x: start.x - 100, y: start.y + 50))
+                }
+                // and the header's buttons still take a click: the speed button
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    let rate = Deck.shared.rate
+                    let sp = NSPoint(x: w.frame.maxX - 70, y: w.frame.maxY - 26)
+                    send(.leftMouseDown, sp)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { send(.leftMouseUp, sp) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        dlog("demo popout speed click: \(rate) -> \(Deck.shared.rate)")
+                    }
+                }
+            }
+            for t in [2.5, 6.0] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) {
+                    if let w = PopOutController.shared.window { dlog("demo popout frame \(NSStringFromRect(w.frame))") }
+                }
+            }
+        }
+        if demoScene == "menu" {   // the menu-bar icon's right-click menu, popped for a screenshot
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let m = self?.buildMenu() else { return }
+                for i in m.items {
+                    dlog("demo menu: " + (i.isSeparatorItem ? "----" : "\(i.state == .on ? "✓ " : "")\(i.title)\(i.isSectionHeader ? " [header]" : "")\(i.action == nil && !i.isSectionHeader ? " [disabled]" : "")"))
+                }
+            }
+        }
+        if demoScene == "hide" {   // every show/hide control in turn (run with SPEAKYSPEAK_DEMO_IDLE=1)
+            let at = { (t: Double, f: @escaping () -> Void) in
+                DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: f) }
+            let note = { (what: String) in
+                dlog("demo hide \(what): mode \(SettingsStore.shared.hudVisibility.rawValue) mini \(MiniHUDController.shared.isVisible) opened \(MiniHUDController.shared.opened) dismissed \(MiniHUDController.shared.isDismissed) deck \(PopOutController.shared.isOpen) lastFull \(PlayerVisibility.lastWasFull)") }
+            // a click on the icon of the display the mini player lives on
+            let iconClick = { [weak self] in
+                let home = MiniHUDController.shared.homeCardRect(anchor: self?.statusItem?.button) ?? .zero
+                let scr = NSScreen.screens.first { $0.frame.contains(NSPoint(x: home.midX, y: home.midY)) } ?? NSScreen.main!
+                self?.iconLeftClick(at: NSPoint(x: home.midX, y: scr.frame.maxY - 12))
+            }
+            // a labelled still of the area after each step (SPEAKYSPEAK_DEMO_SHOTS=dir;x,y,w,h)
+            let shots = ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_SHOTS"]?.split(separator: ";").map(String.init)
+            var n = 0
+            let log = { (what: String) in
+                note(what)
+                guard let sh = shots, sh.count == 2 else { return }
+                n += 1
+                let name = String(format: "%02d-", n) + what.replacingOccurrences(of: " ", with: "_")
+                    .replacingOccurrences(of: ":", with: "").replacingOccurrences(of: ",", with: "")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                    p.arguments = ["-x", "-R", sh[1], "\(sh[0])/\(name).png"]
+                    try? p.run()
+                }
+            }
+            PlayerVisibility.lastWasFull = false
+            at(1.0) { log("start") }
+            at(1.5) { iconClick(); log("icon: mini opens") }
+            at(3.0) { NotificationCenter.default.post(name: .speakyPopOut, object: MiniHUDController.shared.frameValue); log("expand") }
+            at(5.0) { PopOutController.shared.collapseToMini(); log("arrows: back to mini") }
+            at(7.5) { log("mini still up, nothing playing") }
+            at(8.0) { PlayerVisibility.hideUntilNextReply(); log("X") }
+            at(9.5) { iconClick(); log("icon: mini again") }
+            at(11.0) { iconClick(); log("icon: mini away") }
+            at(12.5) { iconClick(); log("icon: mini") }
+            at(13.5) { NotificationCenter.default.post(name: .speakyPopOut, object: MiniHUDController.shared.frameValue); log("expand") }
+            at(15.5) { iconClick(); log("icon: deck away") }
+            at(17.0) { iconClick(); log("icon: deck back (last size)") }
+            at(19.0) { PopOutController.shared.close(); log("red button") }
+            at(20.5) { log("end") }
+        }
+        if demoScene == "undo" {   // remove, clear, delete all, each brought back with ⌘Z (needs SPEAKYSPEAK_SPEECH_ROOT)
+            let at = { (t: Double, f: @escaping () -> Void) in
+                DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: f) }
+            let d = Deck.shared
+            let dir = ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_SHOTS"]
+            var n = 0
+            let log = { (what: String) in
+                let files = ((try? FileManager.default.contentsOfDirectory(atPath: queueDir.path)) ?? [])
+                    .filter { $0.hasSuffix(".json") }.count
+                dlog("demo undo \(what): items \(d.items.map { $0.id + ($0.state == .done ? "✓" : "") }.joined(separator: " ")) · json \(files) · hint '\(d.hint)'")
+                guard let dir, let w = PopOutController.shared.window else { return }
+                n += 1
+                let name = String(format: "%02d-", n) + what.replacingOccurrences(of: " ", with: "_")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                    p.arguments = ["-x", "-o", "-l", "\(w.windowNumber)", "\(dir)/\(name).png"]
+                    try? p.run()
+                }
+            }
+            // ⌘Z the way a keyboard sends it: queued, so the key monitor sees it
+            func key(_ shift: Bool, _ letter: String = "z", _ code: UInt16 = 6) {
+                guard let w = PopOutController.shared.window else { return }
+                w.makeKeyAndOrderFront(nil)
+                for t in [NSEvent.EventType.keyDown, .keyUp] {
+                    if let e = NSEvent.keyEvent(with: t, location: .zero,
+                                                modifierFlags: shift ? [.command, .shift] : [.command],
+                                                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
+                                                context: nil, characters: shift ? letter.uppercased() : letter,
+                                                charactersIgnoringModifiers: shift ? letter.uppercased() : letter,
+                                                isARepeat: false, keyCode: code) { NSApp.postEvent(e, atStart: false) }
+                }
+            }
+            at(0.8) { PopOutController.shared.open() }
+            at(1.2) {   // real files behind the staged replies, so the moves are real
+                try? FileManager.default.createDirectory(at: queueDir, withIntermediateDirectories: true)
+                for it in d.items {
+                    FileManager.default.createFile(atPath: it.audioURL.path, contents: Data())
+                    FileManager.default.createFile(atPath: queueDir.appendingPathComponent(it.id + ".json").path, contents: Data("{}".utf8))
+                    if it.state == .done { FileManager.default.createFile(atPath: queueDir.appendingPathComponent(it.id + ".done").path, contents: nil) }
+                }
+            }
+            at(2.0) { log("start") }
+            at(3.0) { d.removeByHand(d.items.filter { $0.id == "d3" }, "Remove Reply"); log("row X on d3") }
+            at(4.5) { d.clearDone(byHand: true); log("clear played") }
+            at(6.0) { key(false) }
+            at(6.4) { log("cmd-z: played back") }   // and only that: d3 stays gone until the next one
+            at(7.5) { key(false) }
+            at(7.9) { log("cmd-z: d3 back") }
+            at(9.0) { key(true) }
+            at(9.4) { log("shift-cmd-z: d3 gone again") }
+            at(10.5) { d.clearAll(); log("delete all") }
+            at(12.0) { key(false) }
+            at(12.4) { log("cmd-z: all back") }
+            at(13.5) { log("end") }
+            at(14.0) { key(false, "w", 13) }
+            at(15.0) { dlog("demo undo cmd-w: deck \(PopOutController.shared.isOpen ? "STILL OPEN" : "closed")") }
         }
         if demoScene == "guide" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { GuideWindowController.open() }
@@ -6419,64 +7932,148 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                              : "quiet hotkey registration failed (\(status))")
     }
 
-    // Drives the compact HUD: show it while a reply is actually speaking (or
+    // Drives the mini player: show it while a reply is actually speaking (or
     // paused mid-reply), keep it up across the inter-track gap if it's already
-    // showing and more is queued, and hide it otherwise. Suppressed while the
-    // full deck popover is open so the two don't stack on the same anchor.
+    // showing and more is queued, and hide it otherwise. It stands down while
+    // the full deck is open: one player on screen at a time.
+
     private func updateHUD() {
         let d = Deck.shared
-        // "Always visible" keeps the panel up as a persistent controller; either
-        // way the full-deck popover suppresses it so they don't stack.
+        // "Always visible" keeps the panel up as a persistent controller.
         // Settings open counts as "always": the panel is the preview for the
         // Appearance controls, and it must not fade out mid-adjustment.
         let previewing = SettingsWindowController.shared.isOpen
-        let always = (SettingsStore.shared.hudVisibility == .always || previewing) && !popover.isShown
-        let desired = !popover.isShown &&
-            (always || d.isPlaying || d.isPausedMidItem || (MiniHUDController.shared.isVisible && d.advancePending))
+        let poppedOut = PopOutController.shared.isOpen
+        let mini = MiniHUDController.shared
+        let onItsOwn: Bool
+        switch SettingsStore.shared.hudVisibility {
+        case .always: onItsOwn = true
+        case .whileSpeaking: onItsOwn = d.isPlaying || d.isPausedMidItem || (mini.isVisible && d.advancePending)
+        case .never: onItsOwn = false
+        }
+        let always = (mini.opened || previewing) && !poppedOut
+        let desired = !poppedOut && (mini.opened || previewing || onItsOwn)
         MiniHUDController.shared.setDesiredVisible(desired, always: always, currentID: d.currentID, anchor: statusItem?.button)
     }
 
-    func popoverDidShow(_ notification: Notification) {
-        updateHUD()
-        ClaudeWatch.shared.refreshIfStale()
-    }
-    func popoverDidClose(_ notification: Notification) {
-        updateHUD()
-        ClaudeWatch.shared.freshSeen()
-    }
-
-    // Left-click toggles the deck; right- or ctrl-click shows the menu.
+    // Left-click shows or hides the player, at the size you last used it;
+    // right- or ctrl-click shows the menu. (UX pass, 11/22: the menu-bar
+    // popover is gone; the icon is the player's switch. 11/22 evening: it
+    // used to open only the full deck, Adam: "it only opens the hovering full
+    // size player".)
     @objc private func statusClicked(_ sender: NSStatusBarButton) {
         let e = NSApp.currentEvent
+        let mini = MiniHUDController.shared
         if e?.type == .rightMouseUp || e?.modifierFlags.contains(.control) == true {
             showMenu(sender)
         } else {
-            togglePopover(sender)
+            iconLeftClick(at: NSEvent.mouseLocation)
         }
     }
 
-    private func togglePopover(_ button: NSStatusBarButton) {
-        if popover.isShown {
-            popover.performClose(nil)
+    private func iconLeftClick(at click: NSPoint) {
+        let mini = MiniHUDController.shared
+        if PopOutController.shared.isOpen {
+            PopOutController.shared.fadeAndClose()
+        } else if mini.isVisible {
+            mini.dismiss()
+        } else if PlayerVisibility.lastWasFull {
+            openDeck(clickedAt: click)
         } else {
-            NSApp.activate(ignoringOtherApps: true)   // so sliders/scrubber take clicks
-            popover.show(relativeTo: button.glyphRect, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            openMini(clickedAt: click)
         }
     }
 
-    // Kept to 3 rows (4 with the update cue). A taller menu scrolled off the
-    // top of short screens for one user, 2026-08-17 — so version, update and
-    // feedback all moved into Settings ▸ About & support, and the menu's job
-    // is now just Settings / Mute / Quit.
+    // The mini player by hand: where it lives, unless that's on the other
+    // display, then under the icon you clicked (same rule as the full deck).
+    private func openMini(clickedAt click: NSPoint) {
+        let mini = MiniHUDController.shared
+        if let scr = NSScreen.screens.first(where: { $0.frame.contains(click) }),
+           let home = mini.homeCardRect(anchor: statusItem?.button),
+           !scr.frame.contains(NSPoint(x: home.midX, y: home.maxY - 1)) {
+            let top = min(scr.frame.maxY - 24, scr.visibleFrame.maxY) - 22
+            _ = mini.moveCard(topCentre: NSPoint(x: click.x, y: top), near: scr.frame)
+        }
+        mini.openByHand()
+        updateHUD()
+    }
+
+    // The full deck lives where the mini player lives: it opens on the mini
+    // player's spot (top edge and centre line) and grows out of the mini player
+    // if it is showing, or out of the menu-bar icon if not.
+    //
+    // Two displays (Adam, 11/22: "acting weird between the two connected
+    // displays"): every display has its own menu bar and its own copy of the
+    // icon, and with "Displays have separate Spaces" (his setting) a window
+    // can't sit across two of them. So a click on the icon opens the deck on
+    // the display you clicked: at the mini player if it's there, otherwise
+    // under that display's icon. It used to open wherever the mini player last
+    // was, even on the other display, with the grow flying across the gap.
+    private func openDeck(clickedAt click: NSPoint? = nil) {
+        let po = PopOutController.shared
+        if po.isOpen { po.open(); return }
+        let mini = MiniHUDController.shared
+        let button = statusItem?.button
+        var iconRect: NSRect?
+        if let b = button, let w = b.window {
+            iconRect = w.convertToScreen(b.convert(b.glyphRect, to: nil))
+        }
+        var source = mini.frameValue?.rectValue
+        var home = mini.homeCardRect(anchor: button)
+        if let c = click, let scr = NSScreen.screens.first(where: { $0.frame.contains(c) }) {
+            // the icon you clicked: AppKit's button can belong to the other
+            // display's menu bar, so trust it only if it's on this one
+            if let r = iconRect, !scr.frame.contains(NSPoint(x: r.midX, y: r.midY)) {
+                iconRect = NSRect(x: c.x - 11, y: scr.frame.maxY - 24, width: 22, height: 22)
+            }
+            let onThis = { (r: NSRect?) -> Bool in
+                guard let r else { return false }
+                return scr.frame.contains(NSPoint(x: r.midX, y: r.maxY - 1))
+            }
+            if !onThis(source) { source = nil }
+            if !onThis(home), let ic = iconRect {
+                // the mini player's default spot under the icon, on this display
+                let top = min(ic.minY, scr.visibleFrame.maxY) - 22
+                home = NSRect(x: ic.midX - 132, y: top - 60, width: 264, height: 60)
+            }
+        }
+        if source == nil { source = iconRect }
+        mini.standDown()
+        po.open(from: source, at: home)
+    }
+
+    // Kept short. A taller menu scrolled off the top of short screens for one
+    // user, 2026-08-17, so version, update and feedback all moved into
+    // Settings ▸ About & support. The menu is Mute, the players' own menu
+    // (hide them, and when the mini player shows: 11/22), Settings and Quit.
     private func showMenu(_ button: NSStatusBarButton) {
+        buildMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
+    }
+
+    private func buildMenu() -> NSMenu {
         let menu = NSMenu()
         // Mute first: it's the item reached for most often (Adam, 2026-08-18).
         let mute = NSMenuItem(title: Deck.shared.muted ? "Unmute" : "Mute",
                               action: #selector(toggleMute), keyEquivalent: "")
         mute.target = self
         menu.addItem(mute)
-        menu.addItem(.separator())   // even spacing: Mute / Settings / Quit each get their own band
+        menu.addItem(.separator())   // even spacing: each group gets its own band
+        // the players' own menu (PlayerVisibilityMenu), same words and order
+        let anyUp = MiniHUDController.shared.isVisible || PopOutController.shared.isOpen
+        let hide = NSMenuItem(title: "Hide until the next reply",
+                              action: anyUp ? #selector(hideUntilNextReply) : nil, keyEquivalent: "")
+        hide.target = self
+        menu.addItem(hide)
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Mini player comes up"))
+        for mode in HUDVisibility.allCases {
+            let item = NSMenuItem(title: mode.label, action: #selector(pickMiniMode(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = mode.rawValue
+            item.state = SettingsStore.shared.hudVisibility == mode ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
         let updBusy: Bool = {
             switch Updater.shared.phase {
             case .running, .relaunching: return true
@@ -6492,7 +8089,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let quit = NSMenuItem(title: "Quit SpeakySpeak", action: #selector(quitFromMenu), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
+        return menu
     }
 
     // Route through Deck.toggleMute() so the menu item means the same thing as
@@ -6500,6 +8097,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // unmute. Flipping `muted` raw let the current reply keep talking (found
     // in the 2026-08-25 audit; shipped that way since the menu-bar move).
     @objc private func toggleMute() { Deck.shared.toggleMute() }
+    @objc private func hideUntilNextReply() { PlayerVisibility.hideUntilNextReply() }
+    @objc private func pickMiniMode(_ sender: NSMenuItem) {
+        if let raw = sender.representedObject as? String, let mode = HUDVisibility(rawValue: raw) {
+            PlayerVisibility.set(mode)
+        }
+    }
     @objc private func quitFromMenu() { quitForGood() }
     @objc private func openSettings() { SettingsWindowController.shared.show() }
 
@@ -6536,6 +8139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         var parts: [String] = []
         var tip = stateTooltip(deck, queued: deck.items.filter {
             $0.state == .queued && !deck.isSessionMuted($0) }.count)
+        if let wait = deck.micWaitLine { tip += "\n\(wait). Press play to hear it anyway." }
         let watch = ClaudeWatch.shared
         if let f = watch.flag {
             let down = watch.services.filter { !$0.ok }.map { "\($0.name) \($0.words)" }

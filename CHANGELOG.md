@@ -2,6 +2,20 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.29 (2026-11-23)
+
+**One player, two sizes.** The mini player now grows into the full deck and shrinks back into the same spot, and the button you click never moves from under your pointer. The full deck is a window you drag, resize and keep open, so the menu-bar popover is gone: clicking the Sy shows or hides the player at the size you last used. The X (top left) puts it away until the next reply. Right-click the player or the Sy for **Hide until the next reply** and **Mini player comes up**: With each reply, Always, or Only when I open it. Your old choice carries over.
+
+**It hushes when you talk.** Start dictating, or join a call, and the reply that's playing pauses. When the microphone goes off it picks up two seconds back. While it waits, the player says which app has the microphone, and pressing play always plays. SpeakySpeak never listens: it only asks macOS which apps have the microphone on. If an app on your Mac keeps the microphone on all day, replies wait for it; press play, or turn off Settings ▸ Speech ▸ Pause while you dictate.
+
+**Undo.** Removed the wrong reply? ⌘Z brings it back, and ⇧⌘Z removes it again. It works for a single reply, a whole session, Clear played and Delete all.
+
+**A new look.** A soft glow in your accent colour around the player, a back-to-start button on the full deck, and Claude's usage details open in a drawer below instead of a popover.
+
+**Replies are picked up more reliably.** The hook now uses the final reply text that Claude Code hands it, so it no longer guesses from a transcript that may still be catching up. `/clear` and `/compact` no longer wait around for a reply that isn't coming.
+
+**Also:** the guide explains the new player and what to do when AirPods clicks stop working while another app uses the AirPods microphone.
+
 ## 1.2.28 (2026-11-10)
 
 **Quit means quit.** Quitting SpeakySpeak used to last only until Claude's next reply, which opened it again. Now it stays closed and replies stay silent until you open SpeakySpeak yourself. Only Quit does this: an update, a crash or a logout never leaves it switched off.

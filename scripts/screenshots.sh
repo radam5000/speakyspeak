@@ -7,7 +7,11 @@
 #
 # Usage:  ./build.sh && ./scripts/screenshots.sh [outdir]
 # Scenes: deck+grouped, deck+flat (popover pinned open), hud (mini player),
-#         settings. Crop boxes and the /howto data-URI re-inlining recipe live
+#         popout (the big player window, run by hand: SPEAKYSPEAK_DEMO=popout),
+#         settings. SPEAKYSPEAK_DEMO_SIZE=386x541 sets the deck window's size (the
+#         /howto figures), SPEAKYSPEAK_DEMO_MIC=MacWhisper stages the mic wait.
+#         A deck capture includes its glow (40pt all round); convert to sRGB
+#         before cropping. Crop boxes and the /howto data-URI re-inlining recipe live
 #         in site/howto's git history (commit 6f639ce and after).
 #
 # Demo cast rule: the sessions in seedDemo are the site's home-screen trio

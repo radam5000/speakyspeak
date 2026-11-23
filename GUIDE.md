@@ -3,6 +3,8 @@
 Install instructions are in [INSTALL.md](INSTALL.md), and [speakyspeak.com/howto](https://speakyspeak.com/howto) is the five-minute visual tour with real screenshots. This is the full reference for after it's running: how to set up Claude Code so listening actually works, and what every setting does.
 
 - [How SpeakySpeak works](#how-speakyspeak-works)
+- [The player, in two sizes](#the-player-in-two-sizes)
+- [When you talk](#when-you-talk)
 - [Set this up first](#set-this-up-first)
 - [Timestamps in your replies](#timestamps-in-your-replies)
 - [A suggested way to work](#a-suggested-way-to-work)
@@ -22,17 +24,41 @@ The whole trip, from Claude finishing a reply to you hearing it:
 3. **It cleans them up for listening.** Code blocks are dropped. Links read as their text, bare web addresses as "link", file paths as just the file name, slash commands as words ("code review"), arrows as "to", and emoji and markdown symbols disappear. The reply opens with the time it finished, and with the session name too if you turn that on.
 4. **Your Mac turns it into audio.** With the Kokoro neural voice installed, a small always-on helper renders it in about half a second; otherwise the macOS voice reads it. The audio is evened out to normal speech loudness. Rendering happens on your Mac: the text of your replies never leaves it.
 5. **It joins the queue.** Each reply becomes an audio file plus a note with its session, time and text in `/tmp/claude-speech/queue/`.
-6. **The deck plays them, one at a time.** The menu-bar icon turns orange with bars moving over it while a reply plays, and is crossed out when nothing will be heard, with an orange dot if replies are waiting. Click it for the full deck: the reply playing now, the list of what's next, and controls. The mini player appears while a reply plays (or always, if you set it). Nothing ever talks over anything else, and ⌃⌥⌘Space silences the current reply from any app.
+6. **The deck plays them, one at a time.** The menu-bar icon turns orange with bars moving over it while a reply plays, and is crossed out when nothing will be heard, with an orange dot if replies are waiting. Nothing ever talks over anything else, and ⌃⌥⌘Space silences the current reply from any app. See [The player, in two sizes](#the-player-in-two-sizes) and [When you talk](#when-you-talk).
 
 A few things sit around that loop:
 
-- **The Claude strip** (optional, Settings ▸ Claude). Along the bottom of the deck and the mini player: three dials for your plan usage, three dots for status.claude.com, and your Claude Code version. It asks Anthropic for your usage with your own Claude Code sign-in, every 5 minutes. A blue NEW badge means Claude Code just updated itself, or a newer one is out than the one you have; a blue dot on the menu-bar icon means the same, a red one means a Claude service has trouble. The circular arrow checks everything again right away, reading the newest Claude Code version straight from GitHub. If your Claude Code is on the stable channel (`autoUpdatesChannel` in its settings), "newer" means npm's stable version instead, so it only tells you about a version you can install.
+- **The Claude strip** (optional, Settings ▸ Claude). Along the bottom of the deck and the mini player: three dials for your plan usage, three dots for status.claude.com, and your Claude Code version. It asks Anthropic for your usage with your own Claude Code sign-in, every 5 minutes. Click anywhere on it to open a drawer below with the details: when each limit resets, each service's status, and a link to what's new. A blue NEW badge means Claude Code just updated itself, or a newer one is out than the one you have; a blue dot on the menu-bar icon means the same, a red one means a Claude service has trouble. The circular arrow checks everything again right away, reading the newest Claude Code version straight from GitHub. If your Claude Code is on the stable channel (`autoUpdatesChannel` in its settings), "newer" means npm's stable version instead, so it only tells you about a version you can install.
 - **Updates.** Once a day SpeakySpeak checks whether a new version is out. When one is, an ↑ appears next to the menu-bar icon and Settings ▸ About has an Update button. It pulls the new version into the folder you installed from, rebuilds and relaunches in about a minute, and keeps any changes you made yourself (see [Changing it yourself](#changing-it-yourself)). A reply you paused stays paused through the relaunch, at the same spot, so an update never starts talking by itself.
 - **Two Macs, one pair of AirPods.** Put the other Mac's Tailscale address in `~/.claude/speak-peer` on each. Before one starts a reply by itself, it asks the other whether it is speaking and waits its turn; if both want to start at the same moment, one goes first. This needs Tailscale running on both Macs: if one can't reach the other, each speaks as if it were alone.
 
 - **Your iPhone (in testing, not released yet).** With your iPhone's Tailscale address in `~/.claude/speak-phone`, the app answers that phone, and only that phone, over Tailscale: the SpeakySpeak iPhone app shows the deck, controls it, and with "Play on iPhone" plays the replies itself while this Mac queues silently. The deck then says "Playing on the iPhone" with a Play here button to take it back, and any play on the Mac takes it back too. No file means none of this runs.
 
 What leaves your Mac: the daily update check, and, only if you turn on the Claude strip, the usage, status and Claude Code version checks. If you set up `speak-phone`, your replies go to your own iPhone over your own Tailscale network. The app sends nothing about you or your replies anywhere else.
+
+## The player, in two sizes
+
+There is one player. It is either small (the mini player) or big (the full deck, which adds the list of what's next), never both at once.
+
+| Control | What it does |
+| --- | --- |
+| **The menu-bar icon** | Shows or hides the player, at the size you last used. |
+| **The two arrows, top right** | Switch size. The full deck grows left and down from that corner and shrinks back into it, so the button stays under your pointer. |
+| **The X, top left** | Puts the player away until the next reply. ⌘W does the same on the full deck. |
+| **Right-click** on the player or the icon | **Hide until the next reply**, and **Mini player comes up**: With each reply, Always, or Only when I open it. |
+
+Move the mini player by dragging it anywhere, and the full deck by its top row; resize the full deck from any edge. It floats on top until you put it away. A player you open yourself stays up, playing or not.
+
+## When you talk
+
+Start dictating, or join a call, and SpeakySpeak gets out of the way. When another app turns the microphone on, the reply that is playing pauses and new ones wait. When the microphone goes off, it carries on from two seconds back, so you don't lose the sentence you talked over.
+
+- **The player says who it's waiting for**, for example "Waiting: MacWhisper is using the microphone". So does the menu-bar icon when you hover it.
+- **Pressing play always plays.** SpeakySpeak then leaves the sound alone until the microphone goes off, and pauses again the next time it comes on. (Some dictation apps mute your Mac while they record, so you may hear nothing until you stop.)
+- **An app that keeps the microphone on all day** (some noise removers and recorders do) holds replies until it lets go. Press play once, or turn this off: Settings ▸ Speech ▸ **Pause while you dictate**.
+- **Apple's own speech service doesn't count**, because it can hold the microphone with nobody talking. Dictation that goes through it won't pause a reply.
+
+SpeakySpeak never listens. It asks macOS which apps have the microphone on, which needs no microphone permission and records nothing.
 
 ## Set this up first
 
@@ -98,6 +124,7 @@ Open Settings from the gear on the full deck's "Up next" line, or right-click th
 | **Voice** | Which voice speaks. Kokoro voices when the neural engine is installed, otherwise your macOS voices. ▶ previews the selected one. Changing it re-renders whatever is still queued, so you don't get a mix. |
 | **Rate** | Words per minute, for macOS voices only. Kokoro speed is the playback speed selector instead. |
 | **Say the session name first** | Every reply opens with its session name, so several sessions speaking in a row are easy to tell apart. |
+| **Pause while you dictate** | On by default. A reply pauses while another app has the microphone on and carries on when it goes off; a reply you paused yourself stays paused. [Details above](#when-you-talk). |
 | **Read scripted runs too (claude -p)** | Off by default: runs started with `claude -p` (scripts, scheduled jobs) or by programs built on the Agent SDK are not read aloud. Turn it on if the app you chat in runs Claude that way. The terminal, the desktop app, VS Code and Cursor are always read. |
 
 ### Playback
@@ -110,7 +137,9 @@ Speed, volume and mute live on the full deck itself, not in Settings: the speake
 | --- | --- |
 | **Mini player** | **Classic**, **Glassy** (the default), or **Glassier**. Classic is a solid card that reads the same on any wallpaper. Glassy is translucent and adapts itself to what is behind it. Glassier is more transparent still. Both glass looks need macOS 26. |
 | **Accent colour** | The orange used throughout the app. Most of the slider sweeps through colours at a fixed saturation and brightness, so any choice keeps the same muted feel; the last stretch leaves colour behind and runs white to grey to black. Reset returns the original terracotta. |
-| **Show mini player** | **Only while speaking** appears with a reply and fades after. **Always visible** keeps a small controller on screen. Either way you can drag it anywhere and it stays there. |
+| **Mini player comes up** | When the mini player appears on its own. **With each reply** appears with a reply and fades after. **Always** keeps it on screen. **Only when I open it** never pops it up: open it from the menu-bar icon. A mini player you open yourself stays until you put it away, in every mode. Drag it anywhere and it stays there. The same choice is in the right-click menu of the mini player, the full deck and the menu-bar icon. |
+
+The glow around the player follows the accent colour. For a softer one, run `defaults write com.adamraabe.SpeakySpeak edgeGlow -int 1` and reopen SpeakySpeak; `0` turns it off.
 
 ### Claude
 
@@ -143,6 +172,8 @@ The row above the queue, on the "Up next" line. Hovering any of them replaces th
 | **Gear** | Settings. |
 
 Hovering a row in the queue gives you **Play now** and **Remove** for that one reply. Hovering a session header gives you **Play this session next** and **Remove this session's queued replies**.
+
+Removed the wrong one? Press **⌘Z** with the deck in front: it brings back what the last X, **Clear played** or **Delete all** took away, played replies still marked played. Press it again to go further back; **⇧⌘Z** removes them again. Undo lasts until SpeakySpeak quits, and it never starts a reply playing.
 
 ### Elsewhere
 
@@ -203,10 +234,14 @@ When an update arrives, your commits and uncommitted edits are carried over on t
 Logs live in `/tmp/claude-speech/`: `hook.log` for rendering, `deck.log` for the app.
 
 - **Nothing is spoken.** If SpeakySpeak isn't in the menu bar, it was quit: open it again (Spotlight, or Finder ▸ your Applications folder). Check `~/.claude/speak-off` doesn't exist, then check the full deck isn't muted, then look at `hook.log`.
+- **The player is gone.** Click the Sy in the menu bar. If it should come back by itself with each reply, right-click the Sy and set **Mini player comes up** to With each reply.
+- **A reply paused by itself, or replies wait and nothing plays.** Another app has the microphone on. Hover the Sy to see which one, press play to hear replies anyway, or turn off Settings ▸ Speech ▸ Pause while you dictate. `deck.log` says "microphone on" with the app's name. See [When you talk](#when-you-talk).
+- **You removed the wrong reply.** Press ⌘Z with the full deck in front.
 - **A reply was skipped.** Look for it in `hook.log`. Every spoken reply logs a line.
 - **An app you chat in is never read aloud.** If `hook.log` says "scripted run ... not read aloud", the app runs Claude with `claude -p`. Turn on Settings ▸ Speech ▸ Read scripted runs too.
 - **It reads things you don't want.** Set Read replies back to "When Claude finishes."
 - **The voice sounds wrong or slow.** The neural voice may have fallen back to macOS voices. `hook.log` records which engine each reply used.
+- **AirPods clicks stop pausing or skipping, and you hear a short reject chime.** Another app (a dictation app, for example) is using the AirPods microphone. While it is, macOS turns a stem click into a mic mute and may show "Cannot Control Mic with AirPods Pro", so the click never reaches SpeakySpeak. Fix: System Settings ▸ Sound, and under Input pick the Mac's own microphone (for example "MacBook Pro Microphone") instead of the AirPods.
 
 Still stuck, or something's just annoying? Email [hi@speakyspeak.com](mailto:hi@speakyspeak.com). Settings ▸ Report an issue has two buttons ("Email draft" and "Claude draft") that write the report for you, including one that hands your own Claude Code the job of gathering the logs.
 

@@ -19,8 +19,9 @@
 set -u
 cd "$(dirname "$0")"
 FAILED=0
+FAILED_STEPS=()
 step() { echo; echo "=== $1 ==="; }
-res() { if [ "$1" -eq 0 ]; then echo "--- PASS: $2"; else echo "--- FAIL: $2"; FAILED=1; fi }
+res() { if [ "$1" -eq 0 ]; then echo "--- PASS: $2"; else echo "--- FAIL: $2"; FAILED=1; FAILED_STEPS+=("$2"); fi }
 
 step "1. syntax: hooks + daemon"
 bash -n hooks/speak-reply.sh;                    res $? "bash -n speak-reply.sh"
@@ -48,6 +49,8 @@ bash tests/guide-gate-test.sh
 res $? "tests/guide-gate-test.sh (the guide gate catches a planted gap)"
 bash tests/run-pause-relaunch-test.sh
 res $? "tests/run-pause-relaunch-test.sh (a pause survives a relaunch)"
+bash tests/run-mic-test.sh
+res $? "tests/run-mic-test.sh (quiet while another app has the mic on)"
 bash tests/run-channel-test.sh
 res $? "tests/run-channel-test.sh (the Claude strip follows the stable channel)"
 
@@ -157,4 +160,9 @@ echo "docs checked: $(echo $DOCS | wc -w | tr -d ' ') file(s), $DFAIL problem(s)
 
 echo
 if [ "$FAILED" -eq 0 ]; then echo "VERIFY: ALL GREEN"; exit 0
-else echo "VERIFY: FAILED"; exit 1; fi
+else
+  # Name what failed at the end: the tail is often all anyone sees (a 5 am
+  # run under load printed only "VERIFY: FAILED", and the next runs were green).
+  echo "VERIFY: FAILED (${#FAILED_STEPS[@]}):"
+  for f in "${FAILED_STEPS[@]}"; do echo "  - $f"; done
+  exit 1; fi

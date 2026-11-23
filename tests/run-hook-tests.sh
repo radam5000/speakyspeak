@@ -103,12 +103,21 @@ grep -q "no fresh text after polling" "$R1/hook.log" 2>/dev/null \
 # --- test 2: multi-entry turn gathers every text entry (the 8/11 bug) -------
 echo "test 2: a multi-entry turn speaks all assistant text entries, not just the last"
 R2="$TDIR/root2"; T2="$TDIR/t2.jsonl"
-{ e_user u1 "do the thing"
-  e_text a1 "First part."
-  e_tooluse a2 ""
-  e_toolresult u2
-  e_text a3 "Second part."
-} > "$T2"
+# T2 is reused by tests 3a, 3b and 15-20. The hook's fast-flush gate only takes
+# a reply under 120s old, and the two 30s silent waits (tests 1 and 3a) plus a
+# loaded machine can push test 15 past that: on 2026-11-08 (load average 145,
+# several 5 am jobs at once) tests 15, 17, 18, 19 and 20 failed "no fresh text"
+# while the hook was fine. fresh_t2 rewrites the same entries with a new
+# timestamp, so each later test reads a reply that just landed, as in real use.
+fresh_t2() {
+  { e_user u1 "do the thing"
+    e_text a1 "First part."
+    e_tooluse a2 ""
+    e_toolresult u2
+    e_text a3 "Second part."
+  } > "$T2"
+}
+fresh_t2
 run_hook "$T2" "$R2"
 J2=$(ls "$R2/queue/"*.json 2>/dev/null | head -1)
 if [ -n "$J2" ]; then
@@ -352,7 +361,7 @@ else ok "unrelated notification type stays silent"; fi
 # contract with only the system dirs (plus the stubs standing in for say/open/
 # afplay). A regression here reads as "installed fine, total silence".
 echo "test 15: the Stop hook completes under a bare Dock-style PATH"
-R15="$TDIR/root15"
+R15="$TDIR/root15"; fresh_t2
 printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T2" "$SID_FULL" "$PROJ" \
   | env HOME="$THOME" PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin" SPEAKYSPEAK_SPEECH_ROOT="$R15" bash "$HOOK"
 if ls "$R15/queue/"*.json >/dev/null 2>&1; then ok "queued with PATH=$STUB:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -361,7 +370,7 @@ else bad "nothing queued under a bare PATH (hook.log: $(cat "$R15/hook.log" 2>/d
 # A headless job (launchd `claude -p`) exports SPEAKYSPEAK_QUIET=1; the same
 # transcript that queues in test 2 must queue nothing and log nothing.
 echo "test 16: SPEAKYSPEAK_QUIET=1 silences the run"
-R16="$TDIR/root16"
+R16="$TDIR/root16"; fresh_t2
 printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T2" "$SID_FULL" "$PROJ" \
   | env HOME="$THOME" PATH="$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R16" SPEAKYSPEAK_QUIET=1 bash "$HOOK"
 if ls "$R16/queue/"*.json >/dev/null 2>&1; then bad "queued despite SPEAKYSPEAK_QUIET=1"
@@ -371,13 +380,13 @@ else ok "nothing queued"; fi
 # ~/.claude/speak-name-first = every track opens with the session name (the
 # folder name when the session has no title), spoken and stored in `text`.
 echo "test 17: speak-name-first puts the session name at the front of the text"
-R17="$TDIR/root17"; touch "$THOME/.claude/speak-name-first"
+R17="$TDIR/root17"; touch "$THOME/.claude/speak-name-first"; fresh_t2
 run_hook "$T2" "$R17"
 rm -f "$THOME/.claude/speak-name-first"
 want="$(basename "$PROJ" | tr '_-' '  ')."
 got=$(cat "$R17/queue/"*.json 2>/dev/null | jq -r '.text' | head -1 | cut -c1-${#want})
 [ "$got" = "$want" ] && ok "text opens with '$want'" || bad "text opens with '$got', wanted '$want'"
-R17b="$TDIR/root17b"; run_hook "$T2" "$R17b"
+R17b="$TDIR/root17b"; fresh_t2; run_hook "$T2" "$R17b"
 got=$(cat "$R17b/queue/"*.json 2>/dev/null | jq -r '.text' | head -1 | cut -c1-${#want})
 [ "$got" != "$want" ] && ok "without the knob the name is not added" || bad "name added without the knob"
 
@@ -399,7 +408,7 @@ cat > "$GNU/stat" <<'EOF2'
 echo "stat: GNU stand-in: cannot read file system information for '%m'" >&2; exit 1
 EOF2
 chmod +x "$GNU/date" "$GNU/stat"
-R18="$TDIR/root18"
+R18="$TDIR/root18"; fresh_t2
 printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T2" "$SID_FULL" "$PROJ" \
   | env HOME="$THOME" PATH="$STUB:$GNU:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R18" bash "$HOOK"
 J18=$(ls "$R18/queue/"*.json 2>/dev/null | head -1)
@@ -411,7 +420,7 @@ else bad "nothing queued under GNU date/stat (hook.log: $(tail -1 "$R18/hook.log
 # --- test 19: a non-ASCII folder name survives a Dock launch (no LANG) ------
 echo "test 19: project names keep accents, spaces and non-Latin scripts without LANG"
 for name in "café app" "プロジェクト"; do
-  P19="$TDIR/$name"; mkdir -p "$P19"; R19="$TDIR/root19-$RANDOM"
+  P19="$TDIR/$name"; mkdir -p "$P19"; R19="$TDIR/root19-$RANDOM"; fresh_t2
   printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T2" "$SID_FULL" "$P19" \
     | env -u LANG -u LC_ALL -u LC_CTYPE HOME="$THOME" PATH="$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R19" bash "$HOOK"
   got=$(jq -r .project "$R19/queue/"*.json 2>/dev/null)
@@ -426,7 +435,7 @@ MV="$TDIR/movedbin"; mkdir -p "$MV"
 printf '#!/bin/bash\necho "open $*" >> "%s/calls20"\ncase "$*" in *" -a "*) exit 1 ;; esac\nexit 0\n' "$TDIR" > "$MV/open"
 printf '#!/bin/bash\necho "afplay $*" >> "%s/calls20"\n' "$TDIR" > "$MV/afplay"
 chmod +x "$MV/open" "$MV/afplay"
-R20="$TDIR/root20"
+R20="$TDIR/root20"; fresh_t2
 printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s"}' "$T2" "$SID_FULL" "$PROJ" \
   | env HOME="$THOME" PATH="$MV:$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R20" bash "$HOOK"
 grep -q 'open -g -b com.adamraabe.SpeakySpeak' "$TDIR/calls20" 2>/dev/null && ok "fell back to the bundle id" || bad "no bundle-id open: $(cat "$TDIR/calls20" 2>/dev/null)"
@@ -490,6 +499,51 @@ printf '{"transcript_path":"%s","session_id":"%s","cwd":"%s","hook_event_name":"
   | env HOME="$THOME" PATH="$SPY:$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$R23b" bash "$HOOK"
 grep -q '^open ' "$SPY/calls" 2>/dev/null && ok "without the marker the app is opened again" || bad "no open call without the marker"
 ls "$R23b/queue/"*.json >/dev/null 2>&1 && ok "without the marker the reply queues" || bad "nothing queued without the marker"
+
+# --- test 24: last_assistant_message (Stop hook field, 2026-11-21) ----------
+# Claude Code hands Stop the final reply's text. The gate then accepts only the
+# entry carrying that text, stays silent when it is the .seen one (Stop also
+# fires on /clear and /compact), and speaks the field alone when the
+# transcript never shows it. Gather still reads the transcript.
+run_lam() {  # $1 = transcript, $2 = speech root, $3 = last_assistant_message
+  jq -n --arg t "$1" --arg s "$SID_FULL" --arg c "$PROJ" --arg m "$3" \
+    '{transcript_path: $t, session_id: $s, cwd: $c, hook_event_name: "Stop", last_assistant_message: $m}' \
+    | env HOME="$THOME" PATH="$STUB:$PATH" SPEAKYSPEAK_SPEECH_ROOT="$2" bash "$HOOK"
+}
+echo "test 24a: with the field, an already-flushed turn still gathers every entry"
+R24a="$TDIR/root24a"; run_lam "$T2" "$R24a" "Second part."
+[ "$(qtext "$R24a")" = $'First part.\n\nSecond part.' ] && ok "gathered both entries" || bad "text is '$(qtext "$R24a")'"
+[ "$(cat "$R24a/.seen-$SID" 2>/dev/null)" = a3 ] && ok ".seen marks the final entry" || bad ".seen is '$(cat "$R24a/.seen-$SID" 2>/dev/null)'"
+
+echo "test 24b: with the field, a reply that flushes late is waited for, then gathered"
+R24b="$TDIR/root24b"; T24b="$TDIR/t24b.jsonl"
+{ e_user u1 "do the thing"; e_text a1 "First part."; e_tooluse a2 "Checking one thing."; e_toolresult u2; } > "$T24b"
+( sleep 2; e_text a3 "Second part." >> "$T24b" ) &
+run_lam "$T24b" "$R24b" "Second part."
+wait
+[ "$(qtext "$R24b")" = $'First part.\n\nChecking one thing.\n\nSecond part.' ] && ok "waited for the late entry and gathered the turn" || bad "text is '$(qtext "$R24b")'"
+
+echo "test 24c: with the field, a reply already in .seen stays silent at once (/clear, /compact)"
+R24c="$TDIR/root24c"; mkdir -p "$R24c"; printf 'a3' > "$R24c/.seen-$SID"
+s0=$(date +%s); run_lam "$T2" "$R24c" "Second part."; s1=$(date +%s)
+ls "$R24c/queue/"*.json >/dev/null 2>&1 && bad "re-spoke the seen reply" || ok "stayed silent"
+[ $((s1 - s0)) -lt 10 ] && ok "without waiting out the poll window" || bad "took $((s1 - s0)) s"
+
+echo "test 24d: with the field, a transcript that never shows the reply speaks the field alone"
+R24d="$TDIR/root24d"; T24d="$TDIR/t24d.jsonl"
+{ e_user u1 "do the thing"; e_tooluse a1 "Quick check on X before answering."; } > "$T24d"
+run_lam "$T24d" "$R24d" "The final answer is ready."
+[ "$(qtext "$R24d")" = "The final answer is ready." ] && ok "spoke the field, not the preamble" || bad "text is '$(qtext "$R24d")'"
+grep -q "speaking last_assistant_message" "$R24d/hook.log" 2>/dev/null && ok "logged the fallback" || bad "no fallback line in hook.log"
+
+echo "test 24e: with the field, a reply with the same words as the last one is still spoken"
+R24e="$TDIR/root24e"; T24e="$TDIR/t24e.jsonl"; mkdir -p "$R24e"; printf 'a1' > "$R24e/.seen-$SID"
+{ e_user u1 "do the thing"; e_text a1 "Done."; e_user u2 "and the other"; } > "$T24e"
+( sleep 1.5; e_text a2 "Done." >> "$T24e" ) &
+run_lam "$T24e" "$R24e" "Done."
+wait
+[ "$(qtext "$R24e")" = "Done." ] && ok "spoke the second Done." || bad "text is '$(qtext "$R24e")'"
+[ "$(cat "$R24e/.seen-$SID" 2>/dev/null)" = a2 ] && ok ".seen marks the new entry" || bad ".seen is '$(cat "$R24e/.seen-$SID" 2>/dev/null)'"
 
 echo
 echo "hook tests: $PASS passed, $FAIL failed"
