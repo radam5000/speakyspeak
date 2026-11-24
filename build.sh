@@ -45,6 +45,8 @@ cp Icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp Icon/SyGlyph.png "$APP/Contents/Resources/SyGlyph.png"
 # the Updater compares this against the public repo's VERSION on main
 cp VERSION "$APP/Contents/Resources/VERSION"
+# tells the hook this app answers --encode (an older one would open instead)
+echo 1 > "$APP/Contents/Resources/ENCODER"
 # Settings ▸ About ▸ How it works reads this copy, so the guide in the app is
 # always the guide of this version (verify.sh checks they match)
 cp GUIDE.md "$APP/Contents/Resources/GUIDE.md"

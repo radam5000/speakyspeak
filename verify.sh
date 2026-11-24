@@ -51,6 +51,8 @@ bash tests/run-pause-relaunch-test.sh
 res $? "tests/run-pause-relaunch-test.sh (a pause survives a relaunch)"
 bash tests/run-mic-test.sh
 res $? "tests/run-mic-test.sh (quiet while another app has the mic on)"
+bash tests/run-setup-tests.sh
+res $? "tests/run-setup-tests.sh (a stranger's install, in an empty home)"
 bash tests/run-channel-test.sh
 res $? "tests/run-channel-test.sh (the Claude strip follows the stable channel)"
 
@@ -107,6 +109,16 @@ done
 V=$(cat VERSION)
 grep -q "^## $V " CHANGELOG.md || { echo "  CHANGELOG.md has no '## $V' entry"; DFAIL=$((DFAIL+1)); }
 
+# what it needs is said in every place someone meets it before installing
+for f in README.md INSTALL.md setup.sh scripts/doctor.sh site/index.html site/howto/index.html; do
+  [ -f "$f" ] || continue
+  grep -q "15\.6" "$f" && grep -qi "command line tools" "$f" || { echo "  $f does not state the requirements (macOS 15.6, command line tools)"; DFAIL=$((DFAIL+1)); }
+done
+# the site's pill names the newest version (1.2.28 and 1.2.29 went out with it still on 1.2.27)
+if [ -f site/index.html ]; then
+  grep -q "new in $V<" site/index.html || { echo "  site/index.html's What's new pill is not on $V"; DFAIL=$((DFAIL+1)); }
+fi
+
 # Phrases describing things the app no longer does. CHANGELOG is deliberately
 # exempt: it is a dated record of what shipped when, and its old entries are
 # SUPPOSED to describe the app as it was. Rewriting them to match today would
@@ -135,6 +147,8 @@ macOS 14|the stated minimum became 15.6 in 1.2.11 (the build needs the macOS 26 
 timestamp rule|the hook stamps every reply itself since 1.2.8; no CLAUDE.md rule needed
 queue badge|the menu-bar count became a dot in 1.2.26
 queue-count badge|the menu-bar count became a dot in 1.2.26
+brew install|Homebrew stopped being needed in 1.2.30
+step 7|INSTALL.md has four steps since 1.2.30
 how many are waiting|the menu-bar count became a dot in 1.2.26
 RETIRED
 

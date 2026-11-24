@@ -585,12 +585,18 @@ open -g -a "$APP" 2>/dev/null || open -g -b com.adamraabe.SpeakySpeak 2>>"$LOG" 
 # audio first, manifest second, both via atomic rename — the deck only acts
 # on .json files whose .m4a already exists
 # Kokoro renders ~12dB quieter than say; normalize to the -16 LUFS speech
-# standard while encoding. afconvert (no gain stage) only if ffmpeg is missing.
+# standard while encoding: with ffmpeg where it is installed, else with the
+# app's own encoder, so Homebrew is never needed for it. afconvert (no gain
+# stage, plays too quiet) only if the app was moved or is older than 1.2.30.
 FFMPEG=$(command -v ffmpeg || echo /opt/homebrew/bin/ffmpeg)
+[ -n "${SPEAKYSPEAK_NO_FFMPEG:-}" ] && FFMPEG=/nonexistent   # tests only
+ENCODER="${SPEAKYSPEAK_ENCODER:-$APP/Contents/MacOS/SpeakySpeak}"
 convert_wav() {
   if [ -x "$FFMPEG" ]; then
     "$FFMPEG" -hide_banner -loglevel error -y -i "$1" \
       -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:a aac -b:a 96k "$2" >>"$LOG" 2>&1
+  elif [ -x "$ENCODER" ] && [ -f "${ENCODER%/MacOS/*}/Resources/ENCODER" ] && "$ENCODER" --encode "$1" "$2" >>"$LOG" 2>&1; then
+    return 0
   else
     afconvert -f m4af -d aac "$1" "$2" >>"$LOG" 2>&1
   fi

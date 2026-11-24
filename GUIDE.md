@@ -53,9 +53,9 @@ Move the mini player by dragging it anywhere, and the full deck by its top row; 
 
 Start dictating, or join a call, and SpeakySpeak gets out of the way. When another app turns the microphone on, the reply that is playing pauses and new ones wait. When the microphone goes off, it carries on from two seconds back, so you don't lose the sentence you talked over.
 
-- **The player says who it's waiting for**, for example "Waiting: MacWhisper is using the microphone". So does the menu-bar icon when you hover it.
-- **Pressing play always plays.** SpeakySpeak then leaves the sound alone until the microphone goes off, and pauses again the next time it comes on. (Some dictation apps mute your Mac while they record, so you may hear nothing until you stop.)
-- **An app that keeps the microphone on all day** (some noise removers and recorders do) holds replies until it lets go. Press play once, or turn this off: Settings ▸ Speech ▸ **Pause while you dictate**.
+- **The player says who it's waiting for**, for example "Waiting: MacWhisper is using the microphone". So does the menu-bar icon when you hover it. If nothing is on screen and the wait lasts more than about 10 seconds, the mini player comes up to say so (unless you chose Only when I open it).
+- **Pressing play always plays.** That reply then plays to its end, even if the microphone comes and goes. Once the microphone has gone off, the next reply pauses as usual. (Some dictation apps mute your Mac while they record, so you may hear nothing until you stop.)
+- **An app that keeps the microphone on all day** (some noise removers and recorders do) holds replies until it lets go. Press play once, or turn this off: right-click the player or the Sy and untick **Pause while you dictate** (also in Settings ▸ Speech).
 - **Apple's own speech service doesn't count**, because it can hold the microphone with nobody talking. Dictation that goes through it won't pause a reply.
 
 SpeakySpeak never listens. It asks macOS which apps have the microphone on, which needs no microphone permission and records nothing.
@@ -137,9 +137,8 @@ Speed, volume and mute live on the full deck itself, not in Settings: the speake
 | --- | --- |
 | **Mini player** | **Classic**, **Glassy** (the default), or **Glassier**. Classic is a solid card that reads the same on any wallpaper. Glassy is translucent and adapts itself to what is behind it. Glassier is more transparent still. Both glass looks need macOS 26. |
 | **Accent colour** | The orange used throughout the app. Most of the slider sweeps through colours at a fixed saturation and brightness, so any choice keeps the same muted feel; the last stretch leaves colour behind and runs white to grey to black. Reset returns the original terracotta. |
+| **Glow** | The soft light around the player, in your accent colour: **Off**, **Soft** or **Strong** (the default). |
 | **Mini player comes up** | When the mini player appears on its own. **With each reply** appears with a reply and fades after. **Always** keeps it on screen. **Only when I open it** never pops it up: open it from the menu-bar icon. A mini player you open yourself stays until you put it away, in every mode. Drag it anywhere and it stays there. The same choice is in the right-click menu of the mini player, the full deck and the menu-bar icon. |
-
-The glow around the player follows the accent colour. For a softer one, run `defaults write com.adamraabe.SpeakySpeak edgeGlow -int 1` and reopen SpeakySpeak; `0` turns it off.
 
 ### Claude
 
@@ -231,7 +230,7 @@ When an update arrives, your commits and uncommitted edits are carried over on t
 
 ## When something seems wrong
 
-Logs live in `/tmp/claude-speech/`: `hook.log` for rendering, `deck.log` for the app.
+Run `scripts/doctor.sh` in the folder you installed from: it checks everything a machine can check and prints the fix for each problem. Logs live in `/tmp/claude-speech/`: `hook.log` for rendering, `deck.log` for the app.
 
 - **Nothing is spoken.** If SpeakySpeak isn't in the menu bar, it was quit: open it again (Spotlight, or Finder ▸ your Applications folder). Check `~/.claude/speak-off` doesn't exist, then check the full deck isn't muted, then look at `hook.log`.
 - **The player is gone.** Click the Sy in the menu bar. If it should come back by itself with each reply, right-click the Sy and set **Mini player comes up** to With each reply.
@@ -240,7 +239,8 @@ Logs live in `/tmp/claude-speech/`: `hook.log` for rendering, `deck.log` for the
 - **A reply was skipped.** Look for it in `hook.log`. Every spoken reply logs a line.
 - **An app you chat in is never read aloud.** If `hook.log` says "scripted run ... not read aloud", the app runs Claude with `claude -p`. Turn on Settings ▸ Speech ▸ Read scripted runs too.
 - **It reads things you don't want.** Set Read replies back to "When Claude finishes."
-- **The voice sounds wrong or slow.** The neural voice may have fallen back to macOS voices. `hook.log` records which engine each reply used.
+- **The voice sounds wrong or slow.** The neural voice may have fallen back to macOS voices. `hook.log` records which engine each reply used. Running `./setup.sh` again in the folder you installed from gets the neural voice back.
+- **You want it gone.** `./uninstall.sh` in that folder shows what it would remove; `./uninstall.sh --yes` removes it and leaves your other hooks alone.
 - **AirPods clicks stop pausing or skipping, and you hear a short reject chime.** Another app (a dictation app, for example) is using the AirPods microphone. While it is, macOS turns a stem click into a mic mute and may show "Cannot Control Mic with AirPods Pro", so the click never reaches SpeakySpeak. Fix: System Settings ▸ Sound, and under Input pick the Mac's own microphone (for example "MacBook Pro Microphone") instead of the AirPods.
 
 Still stuck, or something's just annoying? Email [hi@speakyspeak.com](mailto:hi@speakyspeak.com). Settings ▸ Report an issue has two buttons ("Email draft" and "Claude draft") that write the report for you, including one that hands your own Claude Code the job of gathering the logs.

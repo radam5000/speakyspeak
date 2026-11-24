@@ -2,6 +2,24 @@
 
 What changed in each SpeakySpeak release. The app offers updates itself: when a new version is out, the menu-bar icon shows an ↑ and one button in Settings ▸ About & support installs it.
 
+## 1.2.30 (2026-11-24)
+
+**One-command install.** `./setup.sh` does the whole thing: it checks your Mac and says what to fix in plain words, installs the voice, builds the app, hooks it into Claude Code, and says hello out loud when it's ready. It asks no questions and needs no Homebrew, and you can run it again any time. Already installed? You don't need to do anything.
+
+**Clear about what it needs.** Your Claude now tells you what SpeakySpeak needs and what it adds before it downloads anything, checks your Mac, and says exactly what to do if something is missing. The same list is in the README and on the site.
+
+**Right volume without ffmpeg.** SpeakySpeak now brings replies to normal speech level by itself, so a Mac without ffmpeg no longer plays them too quiet.
+
+**Says why it's waiting.** If another app keeps the microphone on, a waiting reply now brings up the mini player after about 10 seconds and says which app it is. **Pause while you dictate** is also in the right-click menu of the player and the Sy, so it's two clicks to turn off.
+
+**Pressing play sticks.** If you press play while another app is using the microphone, that reply now plays to the end, even if the microphone comes and goes.
+
+**A check-up and a clean goodbye.** `scripts/doctor.sh` checks an install and prints the fix for each problem. `./uninstall.sh` takes SpeakySpeak off and leaves your other hooks alone.
+
+**Glow setting.** Settings ▸ Appearance ▸ Glow: Off, Soft or Strong.
+
+**Fixed:** a mini player set to Always could open below the edge of the screen on a Mac where it had never been moved.
+
 ## 1.2.29 (2026-11-23)
 
 **One player, two sizes.** The mini player now grows into the full deck and shrinks back into the same spot, and the button you click never moves from under your pointer. The full deck is a window you drag, resize and keep open, so the menu-bar popover is gone: clicking the Sy shows or hides the player at the size you last used. The X (top left) puts it away until the next reply. Right-click the player or the Sy for **Hide until the next reply** and **Mini player comes up**: With each reply, Always, or Only when I open it. Your old choice carries over.

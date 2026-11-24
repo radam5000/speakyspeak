@@ -777,7 +777,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     func play(_ item: SpeechItem, recordHistory: Bool = true, byHand: Bool = true) {
-        if byHand { overrideMicByHand() }
+        if byHand { overrideMicByHand(item.id) }
         clearAttention()   // audio is flowing again — stop the ripple
         forgetPause()
         muted = false   // explicitly playing something means "I want sound"
@@ -902,6 +902,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
             // item done (and then advance over it while it's still speaking)
             guard p === self.player else { dlog("ignored finish from replaced player"); return }
             if let id = self.currentID { self.setState(id, .done); dlog("finished \(id)") }
+            self.micStickyID = nil
             self.isPlaying = false
             self.progress = self.duration
             self.stopMeter()
@@ -931,7 +932,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
         clearAttention()   // any transport touch counts as "seen"
         pausedForMic = false   // a hand on play or pause outranks the dictation pause
         micWaiting = false
-        if byHand, !isPlaying { overrideMicByHand() }
+        if byHand { isPlaying ? (micStickyID = nil) : overrideMicByHand(currentID) }
         if isPlaying {
             player?.pause()
             isPlaying = false
@@ -1031,9 +1032,33 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // again: "A"). From that press until the mic goes off, nothing here
     // pauses or holds; the next time the mic comes on, the pause works again.
     private var micOverride = false
+    // ...and the reply it was pressed for plays to its end, however often the
+    // mic comes and goes (11/24: a recorder's mic flickered on every 16 s and
+    // re-paused it each time). A pause by hand, or its end, clears it.
+    private var micStickyID: String?
+    private var micAllowed: Bool { micOverride || (micStickyID != nil && micStickyID == currentID) }
     // Something is waiting for the mic right now (a reply paused for it, or
     // one that would have started), and the apps holding it, for micWaitLine.
-    @Published private(set) var micWaiting = false
+    @Published private(set) var micWaiting = false {
+        didSet {
+            guard micWaiting != oldValue else { return }
+            micWaitGen += 1
+            guard micWaiting else { micWaitShown = false; return }
+            // A dictation lasts seconds; a wait longer than this needs saying
+            // out loud on screen, or an app that keeps the microphone on all
+            // day looks like SpeakySpeak broke (Adam, 11/23).
+            let gen = micWaitGen
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                guard let self, self.micWaitGen == gen, let line = self.micWaitLine else { return }
+                dlog("long wait, showing the mini player: \(line)")
+                MiniHUDController.shared.undismiss()
+                self.micWaitShown = true
+            }
+        }
+    }
+    /// The wait has gone on long enough to bring the mini player up with the reason.
+    @Published private(set) var micWaitShown = false
+    private var micWaitGen = 0
     // An automatic start was held. Without this every mic-off ran autoplay,
     // so the end of a call started an old backlog (or replies ⌘Z put back)
     // that nothing had been about to play.
@@ -1055,9 +1080,11 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     // The flags are read first: idle, nothing had been reading them, and a
     // first press of play would be held like an automatic start.
-    private func overrideMicByHand() {
+    private func overrideMicByHand(_ id: String?) {
         MicWatch.shared.checkNow()
-        guard micBusy, !micOverride else { return }
+        guard micBusy else { return }
+        micStickyID = id
+        guard !micOverride else { return }
         micOverride = true
         pausedForMic = false
         micWaiting = false
@@ -1071,7 +1098,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // instead, and starts when the mic goes off.
     private func holdIfMicOn() {
         MicWatch.shared.checkNow()   // idle, the flags weren't being read
-        guard micBusy, !micOverride, isPlaying, SettingsStore.shared.pauseForMic else { return }
+        guard micBusy, !micAllowed, isPlaying, SettingsStore.shared.pauseForMic else { return }
         player?.pause()
         isPlaying = false
         stopMeter()
@@ -1084,7 +1111,7 @@ final class Deck: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func micChanged(_ busy: Bool) {
         micBusy = busy
         if busy {
-            guard isPlaying, !micOverride, SettingsStore.shared.pauseForMic else { return }
+            guard isPlaying, !micAllowed, SettingsStore.shared.pauseForMic else { return }
             togglePlay(byHand: false)
             pausedForMic = true
             micWaiting = true
@@ -1565,7 +1592,7 @@ final class MicWatch {
     // corespeechd is Apple's speech service (Siri, Apple dictation). It took
     // the mic for 12 minutes on 11/23 with nobody dictating, and every reply
     // waited (Adam picked "A": ignore it, at the cost of Apple dictation).
-    private static let ignored: Set<String> = ["com.apple.MediaRemoteUIService", "corespeechd"]
+    private static let ignored: Set<String> = ["com.apple.MediaRemoteUIService", "MediaRemoteUIService", "corespeechd"]
     private var started = false
 
     private static func addr(_ sel: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
@@ -1632,6 +1659,7 @@ final class MicWatch {
     static func displayName(app: String?, path: String) -> String {
         if path.contains("/claude/versions/") { return "Claude Code" }
         let exe = (path as NSString).lastPathComponent
+        if exe == "replayd" { return "a screen recording" }   // macOS's recorder, whichever app asked it
         let n = app ?? (exe == "claude" ? "Claude Code" : exe)
         if let r = n.range(of: " Helper"), r.lowerBound > n.startIndex { return String(n[..<r.lowerBound]) }
         return n.isEmpty ? "another app" : n
@@ -1640,9 +1668,19 @@ final class MicWatch {
     // who, other than this app, is taking input right now
     private func listeners() -> [(id: String, name: String)] {
         var who: [(id: String, name: String)] = []
-        // test seam (tests/run-mic-test.sh): the file's presence is a mic in use
-        if let f = ProcessInfo.processInfo.environment["SPEAKYSPEAK_TEST_MIC"],
-           FileManager.default.fileExists(atPath: f) { who.append(("test-mic", "test-mic")) }
+        // test seam (tests/run-mic-test.sh): the file's presence is a mic in
+        // use, and the real microphone is not read at all, so a recording on
+        // the Mac can't fail a test (it failed the 1.2.30 gate, 11/24)
+        if let f = ProcessInfo.processInfo.environment["SPEAKYSPEAK_TEST_MIC"] {
+            guard let held = try? String(contentsOfFile: f, encoding: .utf8) else { return [] }
+            // a path inside the file stands for the program holding the mic
+            let path = held.trimmingCharacters(in: .whitespacesAndNewlines)
+            if path.isEmpty { who.append(("test-mic", "test-mic")) }
+            else if !Self.ignored.contains((path as NSString).lastPathComponent) {
+                who.append((path, Self.displayName(app: nil, path: path)))
+            }
+            return who
+        }
         for p in processes() {
             var input: UInt32 = 0, pid: pid_t = 0
             var size = UInt32(MemoryLayout<UInt32>.size)
@@ -3615,7 +3653,7 @@ enum Feedback {
     static let claudePrompt = """
     SpeakySpeak, the macOS menu-bar app that reads Claude Code replies aloud, is misbehaving and I want to send a bug report.
 
-    1. Read the last 40 lines of /tmp/claude-speech/hook.log.
+    1. Run scripts/doctor.sh in the folder SpeakySpeak was installed from, and read the last 40 lines of /tmp/claude-speech/hook.log.
     2. Read ~/Library/Logs/speakyspeak-tts.err.log if it exists.
     3. Read the installed version in ~/Applications/SpeakySpeak.app/Contents/Resources/VERSION.
     4. Ask me to describe the problem in a sentence or two, then write a short plain report: my description, the version, my macOS version, and the log lines that look relevant.
@@ -4140,7 +4178,7 @@ struct MiniDeckView: View {
         .frame(width: cardW)
         .hudSurface(settings.hudStyle, cornerRadius: 15, fill: theme.card, stroke: theme.cardStroke)
         // a touch smaller than the deck's, so it fades out inside the 18pt margin
-        .background(EdgeGlow(level: EdgeGlow.level, cornerRadius: 15, scale: 0.85))
+        .background(EdgeGlow(level: settings.edgeGlow, cornerRadius: 15, scale: 0.85))
         .overlay(RainbowRipple(active: deck.attentionWanted))
         .overlay(ShimmerGlow(startedAt: shimmerStart))
         .contextMenu { PlayerVisibilityMenu() }
@@ -4495,6 +4533,12 @@ final class MiniHUDController: ObservableObject {
         }
     }
 
+    /// Once after launch, when the menu-bar icon has its real place.
+    func settle() {
+        guard userOrigin == nil else { return }
+        rehomeOntoVisibleScreen()
+    }
+
     // Put the panel back on a screen that exists. userOrigin is deliberately
     // left untouched, so it stays the user's chosen spot: plug the external
     // display back in and position() restores the panel to it.
@@ -4510,6 +4554,12 @@ final class MiniHUDController: ObservableObject {
         let o = p.frame.origin
         userOrigin = o
         UserDefaults.standard.set(NSStringFromPoint(o), forKey: "hudUserOrigin")
+    }
+
+    // the glow's own shape is the edge; without it the window shadow is
+    func glowChanged() {
+        panel?.hasShadow = EdgeGlow.level == 0
+        panel?.invalidateShadow()
     }
 
     /// The card's frame on screen (the panel minus its 18pt bloom margin), so
@@ -4688,6 +4738,14 @@ final class MiniHUDController: ObservableObject {
         let bf = bwin.convertToScreen(button.convert(glyph, to: nil))
         let screen = bwin.screen ?? NSScreen.main
         let vf = screen?.visibleFrame ?? NSRect(origin: .zero, size: size)
+        // Just after launch the icon isn't in the menu bar yet and its window
+        // sits at the bottom left, which put a player that comes up at launch
+        // (Always) below the screen, for good: top right until it has settled.
+        guard NSScreen.screens.contains(where: { $0.frame.contains(NSPoint(x: bf.midX, y: bf.midY)) && bf.midY > $0.frame.midY })
+        else {
+            let v = (NSScreen.screens.first ?? NSScreen.main)?.visibleFrame ?? vf
+            return NSRect(x: v.maxX - size.width - 6, y: v.maxY - size.height - 6, width: size.width, height: size.height)
+        }
         var x = bf.midX - size.width / 2
         x = min(max(vf.minX + 6, x), vf.maxX - size.width - 6)
         let y = bf.minY - size.height - 4   // just under the menu bar
@@ -5718,6 +5776,8 @@ struct PlayerVisibilityMenu: View {
             ForEach(HUDVisibility.allCases) { Text($0.label).tag($0) }
         }
         .pickerStyle(.inline)
+        Divider()
+        Toggle("Pause while you dictate", isOn: $settings.pauseForMic)
     }
 }
 
@@ -5788,6 +5848,16 @@ final class SettingsStore: ObservableObject {
             Theme.accentTone = accentTone
             UserDefaults.standard.set(accentTone, forKey: "accentTone")
             NotificationCenter.default.post(name: .speakyAccentChanged, object: nil)
+        }
+    }
+    // 0 off, 1 soft, 2 strong (EdgeGlow). Both players redraw at once.
+    @Published var edgeGlow: Int = EdgeGlow.level {
+        didSet {
+            guard !loading, edgeGlow != oldValue else { return }
+            if demoScene == nil { UserDefaults.standard.set(edgeGlow, forKey: "edgeGlow") }
+            EdgeGlow.chosen = edgeGlow
+            MiniHUDController.shared.glowChanged()
+            PopOutController.shared.glowChanged()
         }
     }
     @Published var hudStyle: HUDStyle = .glassy { didSet { guard !loading else { return }; UserDefaults.standard.set(hudStyle.rawValue, forKey: "hudStyle") } }
@@ -5953,20 +6023,110 @@ func kokoroDaemonRender(text: String, voice: String, out: URL) -> Bool {
     return status == "ok" && fm.fileExists(atPath: out.path)
 }
 
-// Matches the hook's convert_wav: loudness-normalize to -16 LUFS while encoding
-// AAC (Kokoro renders ~12dB quiet); afconvert (no gain stage) if ffmpeg is missing.
-func convertWavToM4a(_ wav: URL, out: URL) -> Bool {
-    let ffmpeg = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"]
-        .first { FileManager.default.isExecutableFile(atPath: $0) }
-    let p = Process()
-    if let f = ffmpeg {
-        p.executableURL = URL(fileURLWithPath: f)
-        p.arguments = ["-hide_banner", "-loglevel", "error", "-y", "-i", wav.path,
-                       "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-c:a", "aac", "-b:a", "96k", out.path]
-    } else {
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-        p.arguments = ["-f", "m4af", "-d", "aac", wav.path, out.path]
+// MARK: - Speech encoder (no ffmpeg needed)
+//
+// Kokoro renders about 12 dB quieter than normal speech, so every reply is
+// brought to -16 LUFS. ffmpeg's loudnorm did that, which made Homebrew a
+// requirement for one filter; a Mac without it played every reply too quiet.
+// This measures loudness the same way (ITU-R BS.1770: K-weighting, 400 ms
+// blocks, absolute and relative gates), applies one gain, and soft-limits the
+// few peaks above -1.5 dBFS. The hook reaches it as
+//   SpeakySpeak --encode in.wav out.m4a   (or out.wav)
+// which runs before any window exists and exits.
+enum SpeechEncoder {
+    static let target = -16.0, ceiling = pow(10, -1.5 / 20)
+
+    /// Integrated loudness in LUFS, nil when the audio is silence.
+    static func loudness(_ x: [Float], rate: Double) -> Double? {
+        func biquad(_ x: [Double], _ b0: Double, _ b1: Double, _ b2: Double, _ a1: Double, _ a2: Double) -> [Double] {
+            var y = [Double](repeating: 0, count: x.count), x1 = 0.0, x2 = 0.0, y1 = 0.0, y2 = 0.0
+            for i in x.indices {
+                let v = b0 * x[i] + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+                x2 = x1; x1 = x[i]; y2 = y1; y1 = v; y[i] = v
+            }
+            return y
+        }
+        // the standard's two filters, designed for any sample rate
+        var k = tan(Double.pi * 1681.974450955533 / rate), q = 0.7071752369554196
+        let vh = pow(10, 3.999843853973347 / 20), vb = pow(vh, 0.4996667741545416)
+        var a0 = 1 + k / q + k * k
+        var y = biquad(x.map(Double.init), (vh + vb * k / q + k * k) / a0, 2 * (k * k - vh) / a0,
+                       (vh - vb * k / q + k * k) / a0, 2 * (k * k - 1) / a0, (1 - k / q + k * k) / a0)
+        k = tan(Double.pi * 38.13547087602444 / rate); q = 0.5003270373238773
+        a0 = 1 + k / q + k * k
+        y = biquad(y, 1, -2, 1, 2 * (k * k - 1) / a0, (1 - k / q + k * k) / a0)
+        let win = min(Int(0.4 * rate), y.count), hop = max(1, Int(0.1 * rate))
+        guard win > 0 else { return nil }
+        var power: [Double] = []
+        var i = 0
+        while i + win <= y.count {
+            var e = 0.0
+            for j in i..<(i + win) { e += y[j] * y[j] }
+            power.append(e / Double(win)); i += hop
+        }
+        let lufs = { (p: Double) -> Double in -0.691 + 10 * log10(max(p, 1e-12)) }
+        let loud = power.filter { lufs($0) > -70 }
+        guard !loud.isEmpty else { return nil }
+        let gate = lufs(loud.reduce(0, +) / Double(loud.count)) - 10
+        let kept = loud.filter { lufs($0) > gate }
+        return lufs(kept.reduce(0, +) / Double(max(kept.count, 1)))
     }
+
+    static func normalize(_ x: [Float], rate: Double) -> [Float] {
+        guard let l = loudness(x, rate: rate) else { return x }
+        let gain = pow(10, min(target - l, 30) / 20)
+        let knee = ceiling * 0.7   // below this nothing is touched
+        return x.map { v in
+            let g = Double(v) * gain, m = abs(g)
+            guard m > knee else { return Float(g) }
+            let over = (m - knee) / (ceiling - knee)
+            return Float((g < 0 ? -1 : 1) * (knee + (ceiling - knee) * tanh(over)))
+        }
+    }
+
+    static func encode(_ src: URL, to out: URL) -> Bool {
+        guard let f = try? AVAudioFile(forReading: src), f.length > 0,
+              let buf = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: AVAudioFrameCount(f.length)),
+              (try? f.read(into: buf)) != nil, let ch = buf.floatChannelData, buf.frameLength > 0 else { return false }
+        let n = Int(buf.frameLength), rate = f.processingFormat.sampleRate
+        let channels = Int(f.processingFormat.channelCount)
+        // mono: speech, and every engine here renders mono anyway
+        var mono = [Float](repeating: 0, count: n)
+        for c in 0..<channels { for i in 0..<n { mono[i] += ch[c][i] / Float(channels) } }
+        mono = normalize(mono, rate: rate)
+        guard let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false),
+              let o = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(n)) else { return false }
+        o.frameLength = AVAudioFrameCount(n)
+        for i in 0..<n { o.floatChannelData![0][i] = mono[i] }
+        let wav = out.pathExtension.lowercased() == "wav"
+        let settings: [String: Any] = wav
+            ? [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1,
+               AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false]
+            : [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1,
+               AVEncoderBitRateKey: 64000, AVEncoderAudioQualityKey: AVAudioQuality.max.rawValue]
+        try? FileManager.default.removeItem(at: out)
+        do {
+            // the file is complete only once this object is gone
+            let w = try AVAudioFile(forWriting: out, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+            try w.write(from: o)
+        } catch {
+            try? FileManager.default.removeItem(at: out)
+            return false
+        }
+        return ((try? AVAudioFile(forReading: out))?.length ?? 0) > 0
+    }
+}
+
+// Matches the hook's convert_wav: -16 LUFS while encoding AAC, with ffmpeg
+// where it is installed (as before) and SpeechEncoder where it isn't.
+func convertWavToM4a(_ wav: URL, out: URL) -> Bool {
+    guard let f = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"]
+        .first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+    else { return SpeechEncoder.encode(wav, to: out) }
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: f)
+    p.arguments = ["-hide_banner", "-loglevel", "error", "-y", "-i", wav.path,
+                   "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-c:a", "aac", "-b:a", "96k", out.path]
     p.standardOutput = FileHandle.nullDevice
     p.standardError = FileHandle.nullDevice
     guard (try? p.run()) != nil else { return false }
@@ -6085,8 +6245,8 @@ final class VoicePreviewer: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // raw output is ~12dB quieter than say). Anything the APP renders must go
     // through the same gain stage or it plays noticeably quieter than replies
     // — Adam heard exactly that on the first spoken update confirmation
-    // (2026-08-18). Same ffmpeg filter as the hook's convert_wav; no ffmpeg
-    // (Intel without brew) = raw audio, same as the hook's afconvert branch.
+    // (2026-08-18). Same ffmpeg filter as the hook's convert_wav; no ffmpeg =
+    // SpeechEncoder, as in the hook.
     // The normalized file is cached next to the raw one; callers that must
     // re-render (announce) delete both first.
     private func normalized(_ raw: URL) -> URL {
@@ -6094,7 +6254,8 @@ final class VoicePreviewer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         let fm = FileManager.default
         if fm.fileExists(atPath: out.path) { return out }
         guard let ffmpeg = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"]
-            .first(where: { fm.isExecutableFile(atPath: $0) }) else { return raw }
+            .first(where: { fm.isExecutableFile(atPath: $0) })
+        else { return SpeechEncoder.encode(raw, to: out) ? out : raw }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: ffmpeg)
         p.arguments = ["-hide_banner", "-loglevel", "error", "-y", "-i", raw.path,
@@ -6316,6 +6477,12 @@ struct SettingsView: View {
                             .accessibilityLabel("Reset accent colour to the default")
                     }
                 }
+                Picker("Glow", selection: $settings.edgeGlow) {
+                    Text("Off").tag(0)
+                    Text("Soft").tag(1)
+                    Text("Strong").tag(2)
+                }
+                .help("The soft light around the player, in your accent colour.")
                 Picker("Mini player comes up", selection: $settings.hudVisibility) {
                     ForEach(HUDVisibility.allCases) { Text($0.label).tag($0) }
                 }
@@ -6974,11 +7141,13 @@ struct MorphCard: View {
 // size windows"). A blurred accent stroke on the outline, half of it hidden
 // under the player, so a soft halo leaks out past the edge. Level 0 off, 1
 // soft, 2 strong (the default: Adam picked C from the A/B/C sheet, 11/22);
-// pref "edgeGlow", SPEAKYSPEAK_DEMO_GLOW in demos.
+// Settings ▸ Appearance ▸ Glow, pref "edgeGlow"; SPEAKYSPEAK_DEMO_GLOW in demos.
 struct EdgeGlow: View {
+    static var chosen: Int?   // picked in Settings since launch
     static var level: Int {
+        if let chosen { return chosen }
         if demoScene != nil, let v = ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_GLOW"] { return Int(v) ?? 0 }
-        // Adam picked C, strong (11/22); the pref can still turn it down or off
+        // Adam picked C, strong (11/22); Settings can turn it down or off
         return UserDefaults.standard.object(forKey: "edgeGlow") as? Int ?? 2
     }
     let level: Int
@@ -7052,6 +7221,13 @@ final class WindowGlow {
     func follow(_ w: NSWindow) {
         panel?.setFrame(w.frame.insetBy(dx: -Self.pad, dy: -Self.pad), display: true)
         panel?.alphaValue = w.alphaValue
+    }
+
+    /// The setting changed: draw it again at the new strength, or not at all.
+    func reset(on w: NSWindow?) {
+        detach()
+        panel = nil   // its view was made for the old strength
+        if let w, w.isVisible { attach(to: w) }
     }
 
     func detach() {
@@ -7442,6 +7618,8 @@ final class PopOutController: NSObject, ObservableObject, NSWindowDelegate {
         DispatchQueue.main.async { [weak self] in self?.onChange() }
     }
 
+    func glowChanged() { glow.reset(on: window) }
+
     /// Open at launch if it was open when the app last quit.
     func restoreIfWasOpen() {
         if UserDefaults.standard.bool(forKey: Self.openKey) { open(quietly: true) }
@@ -7621,6 +7799,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // a reply waiting for the microphone says so in the tooltip
         .merge(with: deck.$micWaiting.removeDuplicates().map { _ in () })
         .merge(with: deck.$micHolders.removeDuplicates().map { _ in () })
+        .merge(with: deck.$micWaitShown.removeDuplicates().map { _ in () })
         // …and the ↑ update hint the moment the daily check finds one
         .merge(with: Updater.shared.$availableVersion.removeDuplicates().map { _ in () })
         .receive(on: DispatchQueue.main)
@@ -7650,6 +7829,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             PopOutController.shared.restoreIfWasOpen()
         }
         updateHUD()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { MiniHUDController.shared.settle() }
 
         if demoScene != nil, let m = ProcessInfo.processInfo.environment["SPEAKYSPEAK_DEMO_MODE"].flatMap(HUDVisibility.init) {
             SettingsStore.shared.hudVisibility = m   // in memory only: demo instances don't write it
@@ -7701,6 +7881,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { po.drawerHeight = 150; po.drawerOpen = true }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { po.drawerOpen = false }
                 }
+            }
+        }
+        if demoScene == "glowset" {   // Settings ▸ Glow: off at 3 s, soft at 6 s, strong at 9 s
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { PopOutController.shared.open() }
+            for (t, v) in [(3.0, 0), (6.0, 1), (9.0, 2)] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { SettingsStore.shared.edgeGlow = v }
             }
         }
         if demoScene == "sizes" {   // expand and collapse twice: the size button should never move
@@ -7949,6 +8135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch SettingsStore.shared.hudVisibility {
         case .always: onItsOwn = true
         case .whileSpeaking: onItsOwn = d.isPlaying || d.isPausedMidItem || (mini.isVisible && d.advancePending)
+            || (d.micWaitShown && d.micWaitLine != nil)
         case .never: onItsOwn = false
         }
         let always = (mini.opened || previewing) && !poppedOut
@@ -8074,6 +8261,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(item)
         }
         menu.addItem(.separator())
+        let mic = NSMenuItem(title: "Pause while you dictate", action: #selector(togglePauseForMic), keyEquivalent: "")
+        mic.target = self
+        mic.state = SettingsStore.shared.pauseForMic ? .on : .off
+        menu.addItem(mic)
+        menu.addItem(.separator())
         let updBusy: Bool = {
             switch Updater.shared.phase {
             case .running, .relaunching: return true
@@ -8097,6 +8289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // unmute. Flipping `muted` raw let the current reply keep talking (found
     // in the 2026-08-25 audit; shipped that way since the menu-bar move).
     @objc private func toggleMute() { Deck.shared.toggleMute() }
+    @objc private func togglePauseForMic() { SettingsStore.shared.pauseForMic.toggle() }
     @objc private func hideUntilNextReply() { PlayerVisibility.hideUntilNextReply() }
     @objc private func pickMiniMode(_ sender: NSMenuItem) {
         if let raw = sender.representedObject as? String, let mode = HUDVisibility(rawValue: raw) {
@@ -8339,6 +8532,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         return true
     }
+}
+
+// The hook's encoder (SpeechEncoder): no window, no icon, just the file.
+if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--encode" {
+    exit(SpeechEncoder.encode(URL(fileURLWithPath: CommandLine.arguments[2]),
+                              to: URL(fileURLWithPath: CommandLine.arguments[3])) ? 0 : 1)
 }
 
 let app = NSApplication.shared

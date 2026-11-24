@@ -46,7 +46,7 @@ reply() {
 }
 
 run_deck() {   # root
-  SPEAKYSPEAK_SPEECH_ROOT="$1" "$TMP/Test.app/Contents/MacOS/SpeakySpeak" >/dev/null 2>&1 &
+  SPEAKYSPEAK_TEST_MIC=/nonexistent/mic SPEAKYSPEAK_SPEECH_ROOT="$1" "$TMP/Test.app/Contents/MacOS/SpeakySpeak" >/dev/null 2>&1 &
   PID=$!
   for _ in $(seq 1 40); do grep -q "playing \|autoplay held\|restored " "$1/deck.log" 2>/dev/null && break; sleep 0.25; done
   sleep 3   # the peer check can take 1.2s before an autoplay starts
